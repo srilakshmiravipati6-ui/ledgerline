@@ -125,3 +125,10 @@ def test_user_cannot_move_another_user_money(client):
     )
 
     assert response.status_code == 403
+
+
+def test_root_serves_web_ui(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "LedgerLine" in response.text
+    assert "<html" in response.text.lower()

@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -19,6 +21,7 @@ DB_PATH = BASE_DIR / "ledger.db"
 TOKEN_SECRET = "ledgerline-dev-secret"
 
 app = FastAPI(title="LedgerLine", version="1.0.0")
+app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 security = HTTPBearer(auto_error=False)
 
 
@@ -558,7 +561,7 @@ def create_transfer(payload: TransferRequest, user: dict[str, Any] = Depends(cur
 
 @app.get("/")
 def root():
-    return {"service": "LedgerLine", "status": "online"}
+    return FileResponse(BASE_DIR / "app" / "static" / "index.html")
 
 
 @app.on_event("startup")
