@@ -784,7 +784,7 @@
           <div class="brand-mark">L</div>
           <div>
             <div class="brand-text">LedgerLine</div>
-            <div class="brand-sub">Trust. Track. Transact.</div>
+            <div class="brand-sub" id="session-status">Not signed in</div>
           </div>
         </div>
 
@@ -812,8 +812,8 @@
         <div class="profile-mini">
           <div class="avatar">AM</div>
           <div>
-            <strong>Alex Morgan</strong>
-            <small>Account Holder</small>
+            <strong id="sidebar-username">Guest</strong>
+            <small id="sidebar-role">Sign in to continue</small>
           </div>
         </div>
       </aside>
@@ -822,14 +822,14 @@
         <div class="topbar-main">
           <div class="search">
             <span>🔎</span>
-            <input type="text" value="Search transactions, accounts..." aria-label="Search" />
+            <input type="text" placeholder="Search transactions, accounts..." aria-label="Search" />
           </div>
 
           <div class="top-actions">
             <div class="bell">🔔</div>
             <div class="mini-user">
               <div class="mini-avatar">AM</div>
-              <div style="font-weight:700;">Alex Morgan</div>
+              <div id="topbar-username" style="font-weight:700;">Sign in</div>
             </div>
           </div>
         </div>
@@ -837,19 +837,19 @@
         <div class="content">
           <div class="welcome-row">
             <div>
-              <h1 class="welcome-title">Good afternoon, Alex! <span class="emoji">☀️</span></h1>
+              <h1 class="welcome-title">Welcome, <span id="welcome-username">Guest</span>! <span class="emoji">☀️</span></h1>
               <div class="welcome-sub">Here's what’s happening with your finances today.</div>
             </div>
-            <div class="date-pill">📅 Friday, November 6, 2026</div>
+            <div class="date-pill" id="current-date"></div>
           </div>
 
           <section class="hero-card">
             <div class="hero-grid">
               <div>
                 <div class="balance-label">Total Account Balance <span>ⓘ</span></div>
-                <div class="balance-value">₹2,84,650.00</div>
-                <div class="balance-sub">Across 2 active accounts</div>
-                <div class="status-ok">✓ Accounts in good standing • Updated just now</div>
+                <div class="balance-value" id="total-balance">Sign in to view balances</div>
+                <div class="balance-sub" id="balance-account-count"></div>
+                <div class="status-ok" id="account-status">Account data loads from LedgerLine.</div>
               </div>
 
               <div class="hero-visual">
@@ -864,22 +864,22 @@
               <h2 class="section-title">Quick Actions</h2>
             </div>
             <div class="quick-grid">
-              <div class="action-tile">
+              <div class="action-tile" role="button" tabindex="0" data-action="deposit">
                 <div class="tile-icon tile-green">＋</div>
                 <div class="tile-label">Deposit</div>
                 <div class="tile-sub">Add funds</div>
               </div>
-              <div class="action-tile">
+              <div class="action-tile" role="button" tabindex="0" data-action="withdrawal">
                 <div class="tile-icon tile-gold">↑</div>
                 <div class="tile-label">Withdraw</div>
                 <div class="tile-sub">Take out funds</div>
               </div>
-              <div class="action-tile">
+              <div class="action-tile" role="button" tabindex="0" data-action="transfer">
                 <div class="tile-icon tile-purple">⇄</div>
                 <div class="tile-label">Transfer</div>
                 <div class="tile-sub">Send money</div>
               </div>
-              <div class="action-tile">
+              <div class="action-tile" role="button" tabindex="0" data-action="statement">
                 <div class="tile-icon tile-blue">📄</div>
                 <div class="tile-label">Statement</div>
                 <div class="tile-sub">View activity</div>
@@ -893,7 +893,7 @@
                 <div class="label">All Accounts</div>
                 <div class="label">→</div>
               </div>
-              <div class="value small">02</div>
+              <div class="value small" id="stat-account-count">—</div>
               <div class="label" style="margin-top: 8px;">Active accounts</div>
             </div>
             <div class="mini-stat">
@@ -901,24 +901,24 @@
                 <div class="label">Total Deposits</div>
                 <div class="label">↗</div>
               </div>
-              <div class="value">₹51,500</div>
-              <div class="trend">This month</div>
+              <div class="value" id="stat-credits">—</div>
+              <div class="trend">All time</div>
             </div>
             <div class="mini-stat">
               <div class="mini-stat-row">
                 <div class="label">Total Withdrawals</div>
                 <div class="label">↗</div>
               </div>
-              <div class="value">₹13,650</div>
-              <div class="trend red">This month</div>
+              <div class="value" id="stat-debits">—</div>
+              <div class="trend red">All time</div>
             </div>
             <div class="mini-stat">
               <div class="mini-stat-row">
                 <div class="label">Transactions</div>
                 <div class="label">↗</div>
               </div>
-              <div class="value small">24</div>
-              <div class="trend">This month</div>
+              <div class="value small" id="stat-transactions">—</div>
+              <div class="trend">All time</div>
             </div>
           </section>
 
@@ -929,33 +929,7 @@
                 <a href="#" class="tiny-link">View All →</a>
               </div>
 
-              <div class="account-list-item">
-                <div class="account-left">
-                  <div class="account-badge">P</div>
-                  <div>
-                    <div class="account-name">Primary Account</div>
-                    <div class="account-meta">•••• 4829 • Savings</div>
-                  </div>
-                </div>
-                <div style="display:flex; align-items:center; gap: 16px;">
-                  <div class="account-value">₹2,34,650 <small>Available</small></div>
-                  <span class="tag active">Active</span>
-                </div>
-              </div>
-
-              <div class="account-list-item">
-                <div class="account-left">
-                  <div class="account-badge" style="background: linear-gradient(135deg, #ebe4ff, #d7efff); color:#4b77df;">D</div>
-                  <div>
-                    <div class="account-name">Daily Expenses</div>
-                    <div class="account-meta">•••• 1903 • Current</div>
-                  </div>
-                </div>
-                <div style="display:flex; align-items:center; gap: 16px;">
-                  <div class="account-value">₹50,000 <small>Available</small></div>
-                  <span class="tag active">Active</span>
-                </div>
-              </div>
+              <div id="account-list-items"></div>
 
               <div style="margin-top: 12px; padding: 10px 2px 0; color: var(--muted); font-size: 0.85rem;">
                 <strong style="color: var(--text);">✓</strong> Account details are protected.
@@ -967,7 +941,7 @@
                 <div class="security-icon">✓</div>
                 <h3>Security Overview</h3>
                 <ul>
-                  <li>Your data is protected with enterprise-grade security.</li>
+                  <li>Access is checked against your account role.</li>
                   <li>Role-based access</li>
                   <li>Transaction audit trail</li>
                   <li>Duplicate request protection</li>
@@ -1009,51 +983,10 @@
                     <th>Amount</th>
                   </tr>
                 </thead>
-                <tbody>
-                  <tr>
-                    <td>Monthly Salary</td>
-                    <td>Deposit</td>
-                    <td>06 Nov 2026</td>
-                    <td>Admin</td>
-                    <td><span class="status-tag status-completed">Completed</span></td>
-                    <td class="amount-pos">+₹45,000</td>
-                  </tr>
-                  <tr>
-                    <td>Grocery Store</td>
-                    <td>Withdrawal</td>
-                    <td>06 Nov 2026</td>
-                    <td>Alex Morgan</td>
-                    <td><span class="status-tag status-completed">Completed</span></td>
-                    <td class="amount-neg">-₹2,450</td>
-                  </tr>
-                  <tr>
-                    <td>Transfer to Savings</td>
-                    <td>Transfer</td>
-                    <td>05 Nov 2026</td>
-                    <td>Alex Morgan</td>
-                    <td><span class="status-tag status-completed">Completed</span></td>
-                    <td class="amount-neg">-₹10,000</td>
-                  </tr>
-                  <tr>
-                    <td>Online Payment</td>
-                    <td>Withdrawal</td>
-                    <td>05 Nov 2026</td>
-                    <td>Alex Morgan</td>
-                    <td><span class="status-tag status-failed">Failed</span></td>
-                    <td class="amount-neg">-₹1,200</td>
-                  </tr>
-                  <tr>
-                    <td>Received from Olivia</td>
-                    <td>Transfer</td>
-                    <td>04 Nov 2026</td>
-                    <td>Admin</td>
-                    <td><span class="status-tag status-completed">Completed</span></td>
-                    <td class="amount-pos">+₹6,500</td>
-                  </tr>
-                </tbody>
+                <tbody id="transaction-rows"></tbody>
               </table>
 
-              <div style="margin-top: 16px; color: var(--muted); font-size: 0.84rem;">Showing 5 of 24 transactions</div>
+              <div id="transaction-count" style="margin-top: 16px; color: var(--muted); font-size: 0.84rem;">Sign in to load account activity.</div>
             </div>
           </div>
 
@@ -1067,25 +1000,67 @@
 
     <script>
       const storageKey = 'ledgerline-token';
-      const sessionStatus = document.querySelector('.brand-sub');
+      const pendingOperationKey = 'ledgerline-pending-operation';
+      let activeUser = null;
+      let accounts = [];
+      let ledgerEntries = [];
       const resultBox = document.createElement('div');
       resultBox.id = 'result-box';
       resultBox.style.display = 'none';
+      Object.assign(resultBox.style, {
+        position: 'fixed',
+        right: '22px',
+        bottom: '22px',
+        zIndex: '10',
+        maxWidth: 'min(560px, calc(100vw - 44px))',
+        maxHeight: '45vh',
+        overflow: 'auto',
+        padding: '16px 20px',
+        border: '1px solid #dfe8f5',
+        borderRadius: '14px',
+        background: '#ffffff',
+        color: '#1f2d3d',
+        boxShadow: '0 12px 30px rgba(17, 34, 68, 0.18)',
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'anywhere'
+      });
       document.body.appendChild(resultBox);
 
       function getToken() {
         return localStorage.getItem(storageKey);
       }
 
-      function setSession(token) {
-        const pill = document.getElementById('session-status');
+      function showResult(message) {
+        resultBox.textContent = message;
+        resultBox.style.display = 'block';
+      }
+
+      function setSession(token, user = null) {
         if (token) {
           localStorage.setItem(storageKey, token);
-          pill.textContent = 'Signed in';
         } else {
           localStorage.removeItem(storageKey);
-          pill.textContent = 'Not signed in';
+          sessionStorage.removeItem(pendingOperationKey);
+          activeUser = null;
+          accounts = [];
+          ledgerEntries = [];
+          document.getElementById('account-list-items').textContent = 'Sign in to load your accounts.';
+          document.getElementById('transaction-rows').replaceChildren();
+          document.getElementById('transaction-count').textContent = 'Sign in to load account activity.';
+          document.getElementById('total-balance').textContent = 'Sign in to view balances';
+          document.getElementById('balance-account-count').textContent = '';
+          document.getElementById('account-status').textContent = 'Account data loads from LedgerLine.';
+          document.getElementById('stat-account-count').textContent = '—';
+          document.getElementById('stat-credits').textContent = '—';
+          document.getElementById('stat-debits').textContent = '—';
+          document.getElementById('stat-transactions').textContent = '—';
         }
+        if (user) activeUser = user;
+        document.getElementById('session-status').textContent = token ? 'Signed in' : 'Not signed in';
+        document.getElementById('topbar-username').textContent = user ? user.username : 'Sign in';
+        document.getElementById('sidebar-username').textContent = user ? user.username : 'Guest';
+        document.getElementById('sidebar-role').textContent = user ? user.role.replaceAll('_', ' ') : 'Sign in to continue';
+        document.getElementById('welcome-username').textContent = user ? user.username : 'Guest';
       }
 
       async function api(path, options = {}) {
@@ -1096,54 +1071,378 @@
 
         const response = await fetch(path, { ...options, headers });
         const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.detail || 'Request failed');
+        if (!response.ok) {
+          const error = new Error(data.detail || `Request failed (${response.status})`);
+          error.status = response.status;
+          throw error;
+        }
         return data;
       }
 
-      async function loadAccounts() {
-        if (!getToken()) return;
-        try {
-          const rows = await api('/accounts');
-          const actor = rows[0] ? rows[0].owner_username : 'admin';
-          const names = rows.map(r => r.name + ' (' + r.balance + ')');
-          document.getElementById('session-status').textContent = 'Signed in';
-          resultBox.textContent = JSON.stringify({ user: actor, accounts: names }, null, 2);
-        } catch (error) {
-          resultBox.textContent = JSON.stringify({ error: error.message }, null, 2);
+      function formatMoney(amount) {
+        return new Intl.NumberFormat('en-IN', {
+          style: 'currency',
+          currency: 'INR',
+          maximumFractionDigits: 2
+        }).format(amount);
+      }
+
+      function formatDate(timestamp) {
+        return new Date(timestamp * 1000).toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric'
+        });
+      }
+
+      function renderAccounts() {
+        const container = document.getElementById('account-list-items');
+        container.replaceChildren();
+        for (const account of accounts) {
+          const item = document.createElement('div');
+          item.className = 'account-list-item';
+          item.tabIndex = 0;
+          item.setAttribute('role', 'button');
+          item.setAttribute('aria-label', `View statement for ${account.name}`);
+          const left = document.createElement('div');
+          left.className = 'account-left';
+          const badge = document.createElement('div');
+          badge.className = 'account-badge';
+          badge.textContent = account.name.slice(0, 1).toUpperCase();
+          const details = document.createElement('div');
+          const name = document.createElement('div');
+          name.className = 'account-name';
+          name.textContent = account.name;
+          const meta = document.createElement('div');
+          meta.className = 'account-meta';
+          meta.textContent = `Account #${account.id} · ${account.owner_username}`;
+          details.append(name, meta);
+          left.append(badge, details);
+          const right = document.createElement('div');
+          right.style.cssText = 'display:flex; align-items:center; gap:16px;';
+          const balance = document.createElement('div');
+          balance.className = 'account-value';
+          balance.textContent = formatMoney(account.balance);
+          const available = document.createElement('small');
+          available.textContent = 'Available';
+          balance.appendChild(available);
+          const status = document.createElement('span');
+          status.className = 'tag active';
+          status.textContent = 'Active';
+          right.append(balance, status);
+          item.append(left, right);
+          item.addEventListener('click', () => showStatement(account.id));
+          item.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              showStatement(account.id);
+            }
+          });
+          container.appendChild(item);
+        }
+        if (accounts.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'account-meta';
+          empty.textContent = 'No accounts are available for this user.';
+          container.appendChild(empty);
         }
       }
 
-      const search = document.querySelector('.search input');
-      search.addEventListener('focus', () => search.value = '');
+      function renderTransactions() {
+        const query = document.querySelector('.search input').value.trim().toLowerCase();
+        const filtered = ledgerEntries.filter(entry =>
+          [entry.description, entry.actor_username, entry.kind, entry.operation_id]
+            .some(value => String(value || '').toLowerCase().includes(query))
+        );
+        const rows = document.getElementById('transaction-rows');
+        rows.replaceChildren();
+        for (const entry of filtered.slice(0, 5)) {
+          const row = document.createElement('tr');
+          const isRefused = entry.kind === 'refused';
+          const columns = [
+            entry.description || entry.operation_id,
+            entry.operation_id.startsWith('transfer:') ? 'Transfer' :
+              entry.kind === 'credit' ? 'Credit' : isRefused ? 'Refused' : 'Debit',
+            formatDate(entry.created_at),
+            entry.actor_username,
+            isRefused ? 'Refused' : 'Completed',
+            `${entry.kind === 'credit' ? '+' : '-'}${formatMoney(entry.amount)}`
+          ];
+          columns.forEach((value, index) => {
+            const cell = document.createElement('td');
+            if (index === 4) {
+              const status = document.createElement('span');
+              status.className = `status-tag ${isRefused ? 'status-failed' : 'status-completed'}`;
+              status.textContent = value;
+              cell.appendChild(status);
+            } else {
+              cell.textContent = value;
+              if (index === 5) cell.className = entry.kind === 'credit' ? 'amount-pos' : 'amount-neg';
+            }
+            row.appendChild(cell);
+          });
+          rows.appendChild(row);
+        }
+        document.getElementById('transaction-count').textContent =
+          `Showing ${Math.min(filtered.length, 5)} of ${filtered.length} matching ledger entries.`;
+      }
 
+      async function refreshDashboard() {
+        if (!getToken()) return;
+        const [user, accountRows] = await Promise.all([api('/me'), api('/accounts')]);
+        activeUser = user;
+        accounts = accountRows;
+        const statements = await Promise.all(
+          accounts.map(account => api(`/accounts/${account.id}/statement`))
+        );
+        ledgerEntries = statements.flatMap(statement =>
+          statement.entries.map(entry => ({ ...entry, account_id: statement.account_id }))
+        ).sort((a, b) => b.id - a.id);
+        setSession(getToken(), user);
+        renderAccounts();
+        renderTransactions();
+
+        const totalBalance = accounts.reduce((total, account) => total + account.balance, 0);
+        const credits = ledgerEntries.filter(entry => entry.kind === 'credit')
+          .reduce((total, entry) => total + entry.amount, 0);
+        const debits = ledgerEntries.filter(entry => entry.kind === 'debit')
+          .reduce((total, entry) => total + entry.amount, 0);
+        const transactions = new Set(ledgerEntries.map(entry => entry.operation_id));
+        document.getElementById('total-balance').textContent = formatMoney(totalBalance);
+        document.getElementById('balance-account-count').textContent =
+          `Across ${accounts.length} account${accounts.length === 1 ? '' : 's'}`;
+        document.getElementById('stat-account-count').textContent = String(accounts.length).padStart(2, '0');
+        document.getElementById('stat-credits').textContent = formatMoney(credits);
+        document.getElementById('stat-debits').textContent = formatMoney(debits);
+        document.getElementById('stat-transactions').textContent = String(transactions.size);
+        document.getElementById('account-status').textContent =
+          statements.every(statement => statement.hash_valid)
+            ? '✓ Ledger integrity verified • Updated just now'
+            : '⚠ Ledger integrity check failed';
+      }
+
+      function requireSignIn() {
+        if (getToken()) return true;
+        showResult('Please sign in before using this feature.');
+        return false;
+      }
+
+      function accountPrompt(message) {
+        if (!accounts.length) {
+          showResult('No account is available for this action.');
+          return null;
+        }
+        const choices = accounts.map(account => `${account.id}: ${account.name}`).join('\n');
+        const value = prompt(`${message}\n${choices}`, String(accounts[0].id));
+        if (value === null) return null;
+        const accountId = Number(value);
+        if (!Number.isSafeInteger(accountId) || !accounts.some(account => account.id === accountId)) {
+          showResult('Enter an account ID shown in the list.');
+          return null;
+        }
+        return accountId;
+      }
+
+      async function submitOperation(path, payload) {
+        sessionStorage.setItem(pendingOperationKey, JSON.stringify({ path, payload }));
+        let result;
+        try {
+          result = await api(path, { method: 'POST', body: JSON.stringify(payload) });
+        } catch (error) {
+          if (error.status && error.status < 500) {
+            sessionStorage.removeItem(pendingOperationKey);
+            showResult(error.message);
+          } else {
+            showResult(`${error.message}\nThe request key is saved; repeat the action and choose Retry to safely resend it.`);
+          }
+          throw error;
+        }
+        sessionStorage.removeItem(pendingOperationKey);
+        showResult(JSON.stringify(result, null, 2));
+        await refreshDashboard();
+      }
+
+      async function retryPendingOperation() {
+        const pending = sessionStorage.getItem(pendingOperationKey);
+        if (!pending) return false;
+        if (!confirm('Retry the previous request with its original idempotency key?')) return true;
+        const operation = JSON.parse(pending);
+        await submitOperation(operation.path, operation.payload);
+        return true;
+      }
+
+      async function runMoneyAction(action) {
+        if (!requireSignIn()) return;
+        if (await retryPendingOperation()) return;
+        const fromId = accountPrompt(action === 'transfer' ? 'Choose the source account ID:' : 'Choose an account ID:');
+        if (fromId === null) return;
+        const amountText = prompt('Enter the amount in whole rupees:');
+        if (amountText === null) return;
+        const amount = Number(amountText);
+        if (!Number.isSafeInteger(amount) || amount <= 0) {
+          showResult('Amount must be a positive whole number of rupees.');
+          return;
+        }
+        const description = prompt('Add a transaction description (optional):') || '';
+        const clientKey = crypto.randomUUID();
+        if (action === 'transfer') {
+          const destinationText = prompt('Enter the destination account ID:');
+          if (destinationText === null) return;
+          const toId = Number(destinationText);
+          if (!Number.isSafeInteger(toId) || toId <= 0 || toId === fromId) {
+            showResult('Enter a valid destination account ID different from the source.');
+            return;
+          }
+          await submitOperation('/transfers', {
+            from_account_id: fromId,
+            to_account_id: toId,
+            amount,
+            description,
+            client_key: clientKey
+          });
+        } else {
+          await submitOperation(action === 'deposit' ? '/deposits' : '/withdrawals', {
+            account_id: fromId,
+            amount,
+            description,
+            client_key: clientKey
+          });
+        }
+      }
+
+      async function showStatement(accountId = null) {
+        if (!requireSignIn()) return;
+        const selectedId = accountId || accountPrompt('Choose an account ID to view its statement:');
+        if (selectedId === null) return;
+        try {
+          const statement = await api(`/accounts/${selectedId}/statement`);
+          showResult(JSON.stringify(statement, null, 2));
+        } catch (error) {
+          showResult(error.message);
+        }
+      }
+
+      async function createAccount() {
+        if (!requireSignIn()) return;
+        const name = prompt('New account name:');
+        if (!name) return;
+        const owner = prompt('Owner username:');
+        if (!owner) return;
+        const overdraftText = prompt('Overdraft limit in whole rupees (0 for none):', '0');
+        if (overdraftText === null) return;
+        const overdraft_limit = Number(overdraftText);
+        if (!Number.isSafeInteger(overdraft_limit) || overdraft_limit < 0) {
+          showResult('Overdraft limit must be a non-negative whole number.');
+          return;
+        }
+        try {
+          const result = await api('/accounts', {
+            method: 'POST',
+            body: JSON.stringify({ name, owner_username: owner, overdraft_limit })
+          });
+          showResult(JSON.stringify(result, null, 2));
+          await refreshDashboard();
+        } catch (error) {
+          showResult(error.message);
+        }
+      }
+
+      document.getElementById('current-date').textContent = `📅 ${new Date().toLocaleDateString('en-IN', {
+        weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
+      })}`;
       document.querySelector('.mini-user').addEventListener('click', async () => {
-        const username = document.getElementById('username') ? document.getElementById('username').value : 'admin';
-        const password = document.getElementById('password') ? document.getElementById('password').value : 'adminpass';
+        if (getToken()) {
+          if (confirm('Sign out of LedgerLine?')) {
+            setSession(null);
+            showResult('You have signed out.');
+          }
+          return;
+        }
+        const username = prompt('Username:');
+        if (!username) return;
+        const password = prompt('Password:');
+        if (password === null) return;
         try {
           const data = await api('/login', {
             method: 'POST',
             body: JSON.stringify({ username, password })
           });
-          setSession(data.token);
-          await loadAccounts();
+          setSession(data.token, data.user);
+          await refreshDashboard();
+          showResult(`Signed in as ${data.user.username} (${data.user.role}).`);
         } catch (error) {
-          resultBox.textContent = JSON.stringify({ error: error.message }, null, 2);
+          showResult(error.message);
         }
       });
 
+      document.querySelectorAll('.action-tile').forEach(tile => {
+        const activate = () => {
+          const action = tile.dataset.action;
+          if (action === 'statement') return showStatement();
+          runMoneyAction(action).catch(() => {});
+        };
+        tile.addEventListener('click', activate);
+        tile.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            activate();
+          }
+        });
+      });
+
+      document.querySelector('.search input').addEventListener('input', renderTransactions);
       document.querySelector('.bell').addEventListener('click', async () => {
-        if (!getToken()) {
-          resultBox.textContent = JSON.stringify({ status: 'Please sign in to view notifications.' }, null, 2);
-          return;
+        if (!requireSignIn()) return;
+        try {
+          await refreshDashboard();
+          showResult('Account and ledger activity refreshed from the database.');
+        } catch (error) {
+          showResult(error.message);
         }
-        const data = await api('/accounts');
-        resultBox.textContent = JSON.stringify({ notifications: data.length + ' account views loaded' }, null, 2);
+      });
+      document.querySelectorAll('.nav-item').forEach(item => {
+        item.addEventListener('click', async event => {
+          event.preventDefault();
+          const label = item.textContent.trim();
+          if (label.includes('My Accounts')) {
+            try {
+              await refreshDashboard();
+              document.querySelector('.account-list').scrollIntoView({ behavior: 'smooth' });
+            } catch (error) {
+              showResult(error.message);
+            }
+          } else if (label.includes('Transactions')) {
+            document.querySelector('.transactions').scrollIntoView({ behavior: 'smooth' });
+          } else if (label.includes('Statements')) {
+            await showStatement();
+          } else if (label.includes('Security & Audit')) {
+            if (!requireSignIn()) return;
+            try {
+              showResult(JSON.stringify(await api('/ledger/verify'), null, 2));
+            } catch (error) {
+              showResult(error.message);
+            }
+          } else if (label.includes('User Management')) {
+            await createAccount();
+          } else if (label.includes('Settings')) {
+            showResult('Settings are managed by your LedgerLine administrator.');
+          } else {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }
+        });
+      });
+      document.querySelector('.tiny-link').addEventListener('click', event => {
+        event.preventDefault();
+        document.querySelector('.account-list').scrollIntoView({ behavior: 'smooth' });
       });
 
-      const existingToken = getToken();
-      if (existingToken) {
-        setSession(existingToken);
-        loadAccounts();
+      if (getToken()) {
+        refreshDashboard().catch(error => {
+          setSession(null);
+          showResult(`Your saved session could not be restored: ${error.message}`);
+        });
+      } else {
+        document.getElementById('account-list-items').textContent = 'Sign in to load your accounts.';
       }
     </script>
   </body>

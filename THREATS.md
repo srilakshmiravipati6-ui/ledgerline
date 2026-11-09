@@ -10,7 +10,7 @@ Mitigation: each money-changing route starts a SQLite transaction with `BEGIN IM
 
 Threat: the same transfer or withdrawal is submitted twice with the same client key and the second attempt pays again.
 
-Mitigation: the server stores a unique `client_key` and the prior response in the `idempotency_keys` table. If the same key is seen again, the API returns the first result without writing a second ledger posting.
+Mitigation: the server stores a unique `client_key`, request fingerprint, actor, and prior response in the `idempotency_keys` table in the same transaction as the money move. An exact replay returns the first result; reuse with a different payload or actor returns `409`.
 
 ## 3. Overdrawn accounts
 
@@ -22,22 +22,28 @@ Mitigation: every withdrawal and transfer validates `new_balance >= -overdraft_l
 
 Threat: a user attempts to spend money from an account they do not own.
 
-Mitigation: every request validates the caller against the source account's `owner_username` before processing. The service returns `403` if the account is not permitted to the caller.
+Mitigation: every money-changing request checks the live database role and source account owner before processing. Only administrators and the owning account holder can move funds; auditors are read-only. The service returns `403` for a forbidden operation.
 
 ## 5. Ledger tampering
 
 Threat: a ledger row is altered or deleted to hide a payment.
 
-Mitigation: the ledger entries are append-only and hash-chained; each row stores the previous hash and its own hash. If someone changes an older row, the hash verification fails. The `/ledger/verify` endpoint exposes this check.
+Mitigation: database triggers reject ledger updates and deletes, and entries are hash-chained; each row stores the previous hash and its own hash. The `/ledger/verify` endpoint exposes the chain check.
 
-## 6. Lost debit or credit
+## 6. Credential and token theft
+
+Threat: a database reader obtains passwords, or a guessed signing key lets an attacker forge bearer tokens.
+
+Mitigation: passwords are stored as salted PBKDF2 hashes. Production startup requires `LEDGERLINE_TOKEN_SECRET`; local development generates a random process secret. Demo credentials are published for local testing only and must be replaced before deployment.
+
+## 7. Lost debit or credit
 
 Threat: a transfer may debits one account while the credit to the destination is omitted due to a partial failure.
 
 Mitigation: transfer logic is one database transaction that updates both balances and inserts both ledger rows together. A failure before commit rolls back the transaction, leaving both accounts unchanged.
 
-## 7. Risks deliberately accepted
+## 8. Risks deliberately accepted
 
 - The service uses a single SQLite database file rather than a distributed ledger or external transaction coordinator. This is intentionally small and is suitable for a single-process demo system, not a multi-region bank deployment.
-- There are no real bank-grade audit logs for external systems or secrets rotation. The app is intentionally focused on integrity and concurrency for a demonstrator.
+- SQLite is suitable for this single-instance demonstration, not high-availability multi-instance production. External audit-log shipping, secret rotation, password reset, and account lifecycle workflows are not implemented.
 - The user model is intentionally simple: ownership is tied to the account owner, and a single account has one owner. This keeps the authorization logic explicit and easy to audit.

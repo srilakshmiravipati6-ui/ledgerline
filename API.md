@@ -15,6 +15,11 @@ All authenticated endpoints require an Authorization header in the form `Bearer 
 - Allowed roles: everyone with a valid username/password.
 - Effect on money: none. It issues a bearer token used for subsequent requests.
 
+### GET /me
+
+- Allowed roles: any authenticated user.
+- Effect on money: none. Returns the current username and role.
+
 ### GET /accounts
 
 - Allowed roles: admin, auditor, and each account holder for their own accounts.
@@ -39,16 +44,19 @@ All authenticated endpoints require an Authorization header in the form `Bearer 
 
 - Allowed roles: admin and the owning account holder.
 - Effect on money: adds the amount to the account balance; inserts a `credit` ledger row and updates the running balance.
+- Provide a unique `client_key` for retry-safe requests. A key is bound to the authenticated user and the full operation; reusing it for different input returns `409`.
 
 ### POST /withdrawals
 
 - Allowed roles: admin and the owning account holder.
 - Effect on money: subtracts the amount if the resulting balance is above the overdraft floor; otherwise the request is rejected and written as a `refused` ledger entry.
+- Provide a unique `client_key` for retry-safe requests. A key is bound to the authenticated user and the full operation; reusing it for different input returns `409`.
 
 ### POST /transfers
 
 - Allowed roles: admin and the owning account holder on the source account.
 - Effect on money: debits the source account and credits the destination account in one transaction; if funds are insufficient the transfer is rejected and a `refused` row is recorded.
+- Provide a unique `client_key` for retry-safe requests. A key is bound to the authenticated user and the full operation; reusing it for different input returns `409`.
 
 ### GET /ledger/verify
 
@@ -60,4 +68,7 @@ All authenticated endpoints require an Authorization header in the form `Bearer 
 - Every transfer is one database transaction, so debits and credits are written together or not at all.
 - No balance can go below zero unless a configured overdraft limit allows it.
 - Idempotency keys are stored per client key so replayed requests return the original result without moving money again.
-- The ledger is append-only and hash-chained to protect against silent edits.
+- Reusing a key with a different request or user returns `409 Conflict`.
+- The database rejects ledger updates and deletes; a hash chain provides an additional integrity check.
+
+Amounts are positive whole rupees. Account balances are stored as integers; transfers and their debit/credit ledger entries are atomic.

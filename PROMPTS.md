@@ -6,7 +6,7 @@
 - What it produced: a basic CRUD skeleton and starter routes.
 - What was wrong: it was missing idempotency, atomic concurrency around balance updates, and a proper ledger hash chain.
 - What I did instead: I wrote the integrity tests first and implemented the transactions and idempotency keys directly in the service logic.
-- Commit: [initial implementation](https://github.com/ledgerline/ledger/commit/b96d022)
+- Commit: [initial implementation](https://github.com/srilakshmiravipati6-ui/ledgerline/commit/b5b3365)
 
 ## 2026-11-06 — Prompt 2
 
@@ -14,7 +14,7 @@
 - What it produced: a naive check-then-update pattern with separate reads and writes.
 - What was wrong: it allowed a race condition where both requests could see the same balance.
 - What I did instead: I replaced it with `BEGIN IMMEDIATE` and performed the balance check and update inside the same transaction.
-- Commit: [transaction safety fix](https://github.com/ledgerline/ledger/commit/b96d022)
+- Commit: [transaction safety fix](https://github.com/srilakshmiravipati6-ui/ledgerline/commit/b5b3365)
 
 ## 2026-11-06 — Prompt 3
 
@@ -22,7 +22,7 @@
 - What it produced: a simple duplicate guard that could be bypassed by concurrent requests.
 - What was wrong: it did not protect against a second request arriving while the first was still in flight.
 - What I did instead: I stored the idempotency record in the same transaction as the balance update and used a unique key constraint to serialize duplicates.
-- Commit: [idempotency fix](https://github.com/ledgerline/ledger/commit/b96d022)
+- Commit: [idempotency fix](https://github.com/srilakshmiravipati6-ui/ledgerline/commit/b5b3365)
 
 ## 2026-11-06 — Prompt 4
 
@@ -30,7 +30,7 @@
 - What it produced: a ledger table without verification.
 - What was wrong: it could be edited without any integrity check.
 - What I did instead: I added a hash chain using `prev_hash` and `hash_value` and exposed the `/ledger/verify` endpoint for audits.
-- Commit: [hash chain fix](https://github.com/ledgerline/ledger/commit/b96d022)
+- Commit: [hash chain fix](https://github.com/srilakshmiravipati6-ui/ledgerline/commit/b5b3365)
 
 ## 2026-11-06 — Prompt 5
 
@@ -38,6 +38,11 @@
 - What it produced: generic routes without a clear permission model.
 - What was wrong: the access matrix was not explicit enough for admin, account-holder, and auditor roles.
 - What I did instead: I documented the roles and enforced them in the server code and README.
-- Commit: [permission documentation](https://github.com/ledgerline/ledger/commit/b96d022)
+- Commit: [permission documentation](https://github.com/srilakshmiravipati6-ui/ledgerline/commit/3703cc3)
 
-> The example commit links are placeholders because this workspace is being initialized in-place; they are replaced with actual git commit hashes after the repository is created and committed.
+## 2026-11-07 — Prompt 6
+
+- What I asked the tool: "Compare the project with the official LedgerLine requirements and close gaps without redesigning the existing webpage."
+- What it found: auditors could perform money operations, idempotency keys were not bound to actors or request contents, passwords were stored in plaintext, and dashboard figures and transactions were hardcoded.
+- What I changed: enforced read-only auditor permissions, bound replay keys to request fingerprints and actors, hashed and migrated passwords, protected ledger rows from updates/deletes, wired the existing dashboard to live API data and actions, and expanded automated coverage and setup/security documentation.
+- Commit: working-tree changes; not yet committed.

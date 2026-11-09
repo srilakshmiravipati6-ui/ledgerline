@@ -4,6 +4,8 @@ import base64
 import hashlib
 import hmac
 import json
+import os
+import secrets
 import sqlite3
 import time
 import uuid
@@ -18,7 +20,11 @@ from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = BASE_DIR / "ledger.db"
-TOKEN_SECRET = "ledgerline-dev-secret"
+TOKEN_SECRET = os.environ.get("LEDGERLINE_TOKEN_SECRET")
+if not TOKEN_SECRET and os.environ.get("LEDGERLINE_ENV") == "production":
+    raise RuntimeError("LEDGERLINE_TOKEN_SECRET must be set in production")
+if not TOKEN_SECRET:
+    TOKEN_SECRET = secrets.token_urlsafe(32)
 
 app = FastAPI(title="LedgerLine", version="1.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
@@ -32,29 +38,29 @@ class UserRole:
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=256)
 
 
 class AccountCreateRequest(BaseModel):
-    name: str
-    owner_username: str
-    overdraft_limit: int = 0
+    name: str = Field(min_length=1, max_length=120)
+    owner_username: str = Field(min_length=1, max_length=80)
+    overdraft_limit: int = Field(default=0, ge=0, strict=True)
 
 
 class MoneyRequest(BaseModel):
-    account_id: int
-    amount: int
-    description: str = ""
-    client_key: str = Field(default_factory=lambda: f"auto-{uuid.uuid4().hex}")
+    account_id: int = Field(gt=0, strict=True)
+    amount: int = Field(gt=0, strict=True)
+    description: str = Field(default="", max_length=500)
+    client_key: str = Field(default_factory=lambda: f"auto-{uuid.uuid4().hex}", min_length=1, max_length=128)
 
 
 class TransferRequest(BaseModel):
-    from_account_id: int
-    to_account_id: int
-    amount: int
-    description: str = ""
-    client_key: str = Field(default_factory=lambda: f"auto-{uuid.uuid4().hex}")
+    from_account_id: int = Field(gt=0, strict=True)
+    to_account_id: int = Field(gt=0, strict=True)
+    amount: int = Field(gt=0, strict=True)
+    description: str = Field(default="", max_length=500)
+    client_key: str = Field(default_factory=lambda: f"auto-{uuid.uuid4().hex}", min_length=1, max_length=128)
 
 
 def get_db() -> sqlite3.Connection:
@@ -62,7 +68,31 @@ def get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    iterations = 240_000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored_password: str) -> bool:
+    if not stored_password.startswith("pbkdf2_sha256$"):
+        return hmac.compare_digest(password, stored_password)
+    try:
+        algorithm, iterations, salt_hex, digest_hex = stored_password.split("$")
+        if algorithm != "pbkdf2_sha256":
+            return False
+        expected = bytes.fromhex(digest_hex)
+        actual = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iterations)
+        )
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(actual, expected)
 
 
 def hash_payload(payload: dict[str, Any]) -> str:
@@ -87,9 +117,14 @@ def decode_token(token: str) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Invalid token signature")
     try:
         payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode("utf-8"))
-    except Exception as exc:
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=401, detail="Invalid token payload") from exc
-    if int(payload.get("exp", 0)) < time.time():
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("sub"), str)
+        or not isinstance(payload.get("exp"), int)
+        or payload["exp"] < time.time()
+    ):
         raise HTTPException(status_code=401, detail="Token is expired")
     return payload
 
@@ -164,10 +199,17 @@ def append_ledger_event(conn: sqlite3.Connection, *, account_id: int, kind: str,
     return row_hash
 
 
-def read_idempotency(conn: sqlite3.Connection, client_key: str) -> Optional[dict[str, Any]]:
-    row = conn.execute("SELECT response_json FROM idempotency_keys WHERE client_key = ?", (client_key,)).fetchone()
+def read_idempotency(
+    conn: sqlite3.Connection, client_key: str, actor_user_id: int, request_hash: str
+) -> Optional[dict[str, Any]]:
+    row = conn.execute(
+        "SELECT response_json, actor_user_id, request_hash FROM idempotency_keys WHERE client_key = ?",
+        (client_key,),
+    ).fetchone()
     if row is None:
         return None
+    if row["actor_user_id"] != actor_user_id or row["request_hash"] != request_hash:
+        raise HTTPException(status_code=409, detail="Idempotency key cannot be reused")
     data = json.loads(row["response_json"])
     data["idempotent"] = True
     return data
@@ -198,10 +240,42 @@ def verify_ledger_chain() -> bool:
     return True
 
 
-def init_db(reset: bool = True) -> None:
+def init_db(reset: bool = False) -> None:
+    production_mode = os.environ.get("LEDGERLINE_ENV") == "production"
+    if production_mode:
+        if not os.environ.get("LEDGERLINE_TOKEN_SECRET"):
+            raise RuntimeError("LEDGERLINE_TOKEN_SECRET must be set in production")
+        required_passwords = {
+            "admin": os.environ.get("LEDGERLINE_ADMIN_PASSWORD"),
+            "alice": os.environ.get("LEDGERLINE_ALICE_PASSWORD"),
+            "bob": os.environ.get("LEDGERLINE_BOB_PASSWORD"),
+            "auditor": os.environ.get("LEDGERLINE_AUDITOR_PASSWORD"),
+        }
+        if (
+            any(not password or len(password) < 12 for password in required_passwords.values())
+            or len(set(required_passwords.values())) != len(required_passwords)
+        ):
+            raise RuntimeError(
+                "Production requires a unique password of at least 12 characters for each seeded user"
+            )
+        initial_users = [
+            ("admin", required_passwords["admin"], UserRole.ADMIN),
+            ("alice", required_passwords["alice"], UserRole.ACCOUNT_HOLDER),
+            ("bob", required_passwords["bob"], UserRole.ACCOUNT_HOLDER),
+            ("auditor", required_passwords["auditor"], UserRole.AUDITOR),
+        ]
+    else:
+        initial_users = [
+            ("admin", "adminpass", UserRole.ADMIN),
+            ("alice", "pass123", UserRole.ACCOUNT_HOLDER),
+            ("bob", "pass123", UserRole.ACCOUNT_HOLDER),
+            ("auditor", "pass123", UserRole.AUDITOR),
+        ]
+
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -219,7 +293,8 @@ def init_db(reset: bool = True) -> None:
                 name TEXT NOT NULL UNIQUE,
                 owner_username TEXT NOT NULL,
                 balance INTEGER NOT NULL DEFAULT 0,
-                overdraft_limit INTEGER NOT NULL DEFAULT 0
+                overdraft_limit INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(owner_username) REFERENCES users(username)
             )
             """
         )
@@ -248,25 +323,59 @@ def init_db(reset: bool = True) -> None:
             CREATE TABLE IF NOT EXISTS idempotency_keys (
                 client_key TEXT PRIMARY KEY,
                 response_json TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                actor_user_id INTEGER,
+                request_hash TEXT
             )
             """
         )
 
+        idempotency_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(idempotency_keys)")
+        }
+        if "actor_user_id" not in idempotency_columns:
+            conn.execute("ALTER TABLE idempotency_keys ADD COLUMN actor_user_id INTEGER")
+        if "request_hash" not in idempotency_columns:
+            conn.execute("ALTER TABLE idempotency_keys ADD COLUMN request_hash TEXT")
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_username)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ledger_account_id ON ledger_entries(account_id, id)"
+        )
+
         if reset:
+            conn.execute("DROP TRIGGER IF EXISTS ledger_entries_no_update")
+            conn.execute("DROP TRIGGER IF EXISTS ledger_entries_no_delete")
             conn.execute("DELETE FROM idempotency_keys")
             conn.execute("DELETE FROM ledger_entries")
             conn.execute("DELETE FROM accounts")
             conn.execute("DELETE FROM users")
 
-        initial_users = [
-            ("admin", "adminpass", UserRole.ADMIN),
-            ("alice", "pass123", UserRole.ACCOUNT_HOLDER),
-            ("bob", "pass123", UserRole.ACCOUNT_HOLDER),
-            ("auditor", "pass123", UserRole.AUDITOR),
-        ]
         for username, password, role in initial_users:
-            conn.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)", (username, password, role))
+            existing = conn.execute(
+                "SELECT id, password FROM users WHERE username = ?", (username,)
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                    (username, hash_password(password), role),
+                )
+            elif production_mode and not verify_password(
+                password, existing["password"]
+            ):
+                conn.execute(
+                    "UPDATE users SET password = ?, role = ? WHERE id = ?",
+                    (hash_password(password), role, existing["id"]),
+                )
+
+        for row in conn.execute("SELECT id, password FROM users").fetchall():
+            if not row["password"].startswith("pbkdf2_sha256$"):
+                conn.execute(
+                    "UPDATE users SET password = ? WHERE id = ?",
+                    (hash_password(row["password"]), row["id"]),
+                )
 
         initial_accounts = [
             ("Alice Checking", "alice", 1000, 0),
@@ -276,7 +385,9 @@ def init_db(reset: bool = True) -> None:
         for name, owner, balance, overdraft in initial_accounts:
             conn.execute("INSERT OR IGNORE INTO accounts (name, owner_username, balance, overdraft_limit) VALUES (?, ?, ?, ?)", (name, owner, balance, overdraft))
 
-        if reset:
+        seed_ledger = reset or conn.execute("SELECT 1 FROM ledger_entries LIMIT 1").fetchone() is None
+        if seed_ledger:
+            admin = conn.execute("SELECT id, username FROM users WHERE username = 'admin'").fetchone()
             account_rows = conn.execute("SELECT * FROM accounts ORDER BY id ASC").fetchall()
             for row in account_rows:
                 append_ledger_event(
@@ -285,21 +396,101 @@ def init_db(reset: bool = True) -> None:
                     kind="credit",
                     amount=row["balance"],
                     running_balance=row["balance"],
-                    description="seed account",
-                    actor_user={"id": 1, "username": "admin"},
+                    description="opening balance",
+                    actor_user={"id": admin["id"], "username": admin["username"]},
                     request_key=f"seed-{row['id']}",
                     operation_id=f"seed-op-{row['id']}",
                 )
+
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS ledger_entries_no_update
+            BEFORE UPDATE ON ledger_entries
+            BEGIN
+                SELECT RAISE(ABORT, 'ledger entries are append-only');
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS ledger_entries_no_delete
+            BEFORE DELETE ON ledger_entries
+            BEGIN
+                SELECT RAISE(ABORT, 'ledger entries are append-only');
+            END
+            """
+        )
+
+
+def require_money_permission(user: dict[str, Any], account: sqlite3.Row) -> None:
+    if user["role"] == UserRole.ADMIN:
+        return
+    if (
+        user["role"] != UserRole.ACCOUNT_HOLDER
+        or account["owner_username"] != user["username"]
+    ):
+        raise HTTPException(status_code=403, detail="Not permitted to move this account's money")
+
+
+def request_fingerprint(operation: str, payload: Any) -> str:
+    if isinstance(payload, BaseModel):
+        model_dump = getattr(payload, "model_dump", None)
+        payload_data = (
+            model_dump(exclude={"client_key"})
+            if model_dump is not None
+            else payload.dict(exclude={"client_key"})
+        )
+    else:
+        payload_data = {
+            key: value
+            for key, value in vars(payload).items()
+            if key != "client_key"
+        }
+    return hash_payload(
+        {"operation": operation, "payload": payload_data}
+    )
+
+
+def store_idempotency(
+    conn: sqlite3.Connection,
+    *,
+    client_key: str,
+    response: dict[str, Any],
+    actor_user_id: int,
+    request_hash: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO idempotency_keys (client_key, response_json, created_at, actor_user_id, request_hash) VALUES (?, ?, ?, ?, ?)",
+        (
+            client_key,
+            json.dumps(response),
+            int(time.time()),
+            actor_user_id,
+            request_hash,
+        ),
+    )
 
 
 @app.post("/login")
 def login(payload: LoginRequest):
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM users WHERE username = ? AND password = ?", (payload.username, payload.password)).fetchone()
+        row = conn.execute("SELECT * FROM users WHERE username = ?", (payload.username,)).fetchone()
+        if row is None or not verify_password(payload.password, row["password"]):
+            raise HTTPException(status_code=401, detail="Invalid username/password")
+        if not row["password"].startswith("pbkdf2_sha256$"):
+            conn.execute(
+                "UPDATE users SET password = ? WHERE id = ?",
+                (hash_password(payload.password), row["id"]),
+            )
     if row is None:
         raise HTTPException(status_code=401, detail="Invalid username/password")
     token = tokenise(row["username"], row["role"])
     return {"token": token, "user": {"username": row["username"], "role": row["role"]}}
+
+
+@app.get("/me")
+def get_current_user(user: dict[str, Any] = Depends(current_user)):
+    return {"username": user["username"], "role": user["role"]}
 
 
 @app.get("/accounts")
@@ -316,19 +507,36 @@ def list_accounts(user: dict[str, Any] = Depends(current_user)):
 def create_account(payload: AccountCreateRequest, user: dict[str, Any] = Depends(current_user)):
     require_admin(user)
     with get_db() as conn:
-        cursor = conn.execute("INSERT INTO accounts (name, owner_username, balance, overdraft_limit) VALUES (?, ?, 0, ?)", (payload.name, payload.owner_username, payload.overdraft_limit))
-        account_id = cursor.lastrowid
-        append_ledger_event(
-            conn,
-            account_id=account_id,
-            kind="credit",
-            amount=0,
-            running_balance=0,
-            description="account created",
-            actor_user=user,
-            request_key=f"account-create-{account_id}",
-            operation_id=f"account-create-{account_id}",
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            owner = conn.execute(
+                "SELECT 1 FROM users WHERE username = ?", (payload.owner_username,)
+            ).fetchone()
+            if owner is None:
+                raise HTTPException(status_code=404, detail="Account owner not found")
+            cursor = conn.execute(
+                "INSERT INTO accounts (name, owner_username, balance, overdraft_limit) VALUES (?, ?, 0, ?)",
+                (payload.name, payload.owner_username, payload.overdraft_limit),
+            )
+            account_id = cursor.lastrowid
+            append_ledger_event(
+                conn,
+                account_id=account_id,
+                kind="credit",
+                amount=0,
+                running_balance=0,
+                description="account created",
+                actor_user=user,
+                request_key=f"account-create-{account_id}",
+                operation_id=f"account-create-{account_id}",
+            )
+            conn.execute("COMMIT")
+        except sqlite3.IntegrityError as exc:
+            conn.execute("ROLLBACK")
+            raise HTTPException(status_code=409, detail="Account name already exists") from exc
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return {"id": account_id, "name": payload.name, "owner_username": payload.owner_username, "balance": 0, "overdraft_limit": payload.overdraft_limit}
 
 
@@ -355,13 +563,15 @@ def verify_ledger(user: dict[str, Any] = Depends(current_user)):
 
 @app.post("/deposits")
 def create_deposit(payload: MoneyRequest, user: dict[str, Any] = Depends(current_user)):
-    if payload.amount <= 0:
-        raise HTTPException(status_code=400, detail="Deposit amount must be positive")
-    account_for_user(user, payload.account_id, require_owner=True)
+    account = account_for_user(user, payload.account_id, require_owner=True)
+    require_money_permission(user, account)
+    fingerprint = request_fingerprint("deposit", payload)
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            existing = read_idempotency(conn, payload.client_key)
+            existing = read_idempotency(
+                conn, payload.client_key, user["id"], fingerprint
+            )
             if existing is not None:
                 conn.execute("COMMIT")
                 return existing
@@ -389,7 +599,13 @@ def create_deposit(payload: MoneyRequest, user: dict[str, Any] = Depends(current
                 "balance": new_balance,
                 "idempotent": False,
             }
-            conn.execute("INSERT INTO idempotency_keys (client_key, response_json, created_at) VALUES (?, ?, ?)", (payload.client_key, json.dumps(response), int(time.time())))
+            store_idempotency(
+                conn,
+                client_key=payload.client_key,
+                response=response,
+                actor_user_id=user["id"],
+                request_hash=fingerprint,
+            )
             conn.execute("COMMIT")
             return response
         except Exception:
@@ -399,13 +615,15 @@ def create_deposit(payload: MoneyRequest, user: dict[str, Any] = Depends(current
 
 @app.post("/withdrawals")
 def create_withdrawal(payload: MoneyRequest, user: dict[str, Any] = Depends(current_user)):
-    if payload.amount <= 0:
-        raise HTTPException(status_code=400, detail="Withdrawal amount must be positive")
     account = account_for_user(user, payload.account_id, require_owner=True)
+    require_money_permission(user, account)
+    fingerprint = request_fingerprint("withdrawal", payload)
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            existing = read_idempotency(conn, payload.client_key)
+            existing = read_idempotency(
+                conn, payload.client_key, user["id"], fingerprint
+            )
             if existing is not None:
                 conn.execute("COMMIT")
                 return existing
@@ -434,7 +652,13 @@ def create_withdrawal(payload: MoneyRequest, user: dict[str, Any] = Depends(curr
                     request_key=payload.client_key,
                     operation_id=operation_id,
                 )
-                conn.execute("INSERT INTO idempotency_keys (client_key, response_json, created_at) VALUES (?, ?, ?)", (payload.client_key, json.dumps(response), int(time.time())))
+                store_idempotency(
+                    conn,
+                    client_key=payload.client_key,
+                    response=response,
+                    actor_user_id=user["id"],
+                    request_hash=fingerprint,
+                )
                 conn.execute("COMMIT")
                 return response
 
@@ -458,7 +682,13 @@ def create_withdrawal(payload: MoneyRequest, user: dict[str, Any] = Depends(curr
                 "balance": new_balance,
                 "idempotent": False,
             }
-            conn.execute("INSERT INTO idempotency_keys (client_key, response_json, created_at) VALUES (?, ?, ?)", (payload.client_key, json.dumps(response), int(time.time())))
+            store_idempotency(
+                conn,
+                client_key=payload.client_key,
+                response=response,
+                actor_user_id=user["id"],
+                request_hash=fingerprint,
+            )
             conn.execute("COMMIT")
             return response
         except Exception:
@@ -468,25 +698,25 @@ def create_withdrawal(payload: MoneyRequest, user: dict[str, Any] = Depends(curr
 
 @app.post("/transfers")
 def create_transfer(payload: TransferRequest, user: dict[str, Any] = Depends(current_user)):
-    if payload.amount <= 0:
-        raise HTTPException(status_code=400, detail="Transfer amount must be positive")
     if payload.from_account_id == payload.to_account_id:
         raise HTTPException(status_code=400, detail="Cannot transfer to the same account")
 
+    fingerprint = request_fingerprint("transfer", payload)
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            existing = read_idempotency(conn, payload.client_key)
-            if existing is not None:
-                conn.execute("COMMIT")
-                return existing
-
             from_account = conn.execute("SELECT * FROM accounts WHERE id = ?", (payload.from_account_id,)).fetchone()
             to_account = conn.execute("SELECT * FROM accounts WHERE id = ?", (payload.to_account_id,)).fetchone()
             if from_account is None or to_account is None:
                 raise HTTPException(status_code=404, detail="Account not found")
-            if user["role"] not in (UserRole.ADMIN, UserRole.AUDITOR) and from_account["owner_username"] != user["username"]:
-                raise HTTPException(status_code=403, detail="Not permitted to move this account's money")
+            require_money_permission(user, from_account)
+
+            existing = read_idempotency(
+                conn, payload.client_key, user["id"], fingerprint
+            )
+            if existing is not None:
+                conn.execute("COMMIT")
+                return existing
 
             new_from = from_account["balance"] - payload.amount
             if new_from < -from_account["overdraft_limit"]:
@@ -510,7 +740,13 @@ def create_transfer(payload: TransferRequest, user: dict[str, Any] = Depends(cur
                     request_key=payload.client_key,
                     operation_id=f"transfer:{payload.client_key}",
                 )
-                conn.execute("INSERT INTO idempotency_keys (client_key, response_json, created_at) VALUES (?, ?, ?)", (payload.client_key, json.dumps(response), int(time.time())))
+                store_idempotency(
+                    conn,
+                    client_key=payload.client_key,
+                    response=response,
+                    actor_user_id=user["id"],
+                    request_hash=fingerprint,
+                )
                 conn.execute("COMMIT")
                 return response
 
@@ -551,7 +787,13 @@ def create_transfer(payload: TransferRequest, user: dict[str, Any] = Depends(cur
                 "to_balance": new_to,
                 "idempotent": False,
             }
-            conn.execute("INSERT INTO idempotency_keys (client_key, response_json, created_at) VALUES (?, ?, ?)", (payload.client_key, json.dumps(response), int(time.time())))
+            store_idempotency(
+                conn,
+                client_key=payload.client_key,
+                response=response,
+                actor_user_id=user["id"],
+                request_hash=fingerprint,
+            )
             conn.execute("COMMIT")
             return response
         except Exception:
