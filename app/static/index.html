@@ -36,6 +36,43 @@
         color: var(--text);
       }
 
+      dialog {
+        width: min(460px, calc(100vw - 32px));
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 24px;
+        color: var(--text);
+        box-shadow: var(--shadow);
+      }
+
+      dialog::backdrop { background: rgba(7, 28, 53, 0.48); }
+      dialog h2 { margin: 0 0 8px; }
+      .dialog-description { color: var(--muted); margin: 0 0 18px; }
+      .dialog-field { display: grid; gap: 6px; margin: 14px 0; font-weight: 600; }
+      .dialog-field input,
+      .dialog-field select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        padding: 10px 12px;
+        font: inherit;
+        color: var(--text);
+      }
+      .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+      .dialog-actions button,
+      .table-tool {
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        padding: 9px 13px;
+        background: white;
+        color: var(--text);
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .dialog-actions .primary,
+      .table-tool.primary { background: var(--primary); color: white; border-color: var(--primary); }
+
       .app-shell {
         display: flex;
         min-height: 100vh;
@@ -98,6 +135,8 @@
         text-decoration: none;
         font-weight: 600;
       }
+
+      .nav-item[hidden] { display: none; }
 
       .nav-item.active {
         background: rgba(77, 124, 255, 0.2);
@@ -221,6 +260,8 @@
         display: grid;
         place-items: center;
         font-size: 1rem;
+        color: var(--text);
+        cursor: pointer;
       }
 
       .mini-user {
@@ -233,6 +274,7 @@
         padding: 5px 8px 5px 6px;
         min-width: 150px;
         justify-content: center;
+        cursor: pointer;
       }
 
       .mini-avatar {
@@ -431,7 +473,14 @@
         padding: 18px 10px 14px;
         text-align: center;
         box-shadow: 0 12px 22px rgba(31, 45, 61, 0.04);
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+        width: 100%;
       }
+      .action-tile:hover,
+      .action-tile:focus-visible { border-color: var(--primary); outline: 2px solid rgba(29, 109, 229, 0.18); }
+      .action-tile:disabled { cursor: not-allowed; opacity: 0.5; }
 
       .tile-icon {
         width: 54px;
@@ -627,6 +676,16 @@
         letter-spacing: 0.04em;
       }
 
+      .transaction-tools { display: flex; align-items: center; gap: 8px; }
+      .transaction-tools select {
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        padding: 8px 10px;
+        background: white;
+        color: var(--text);
+        font: inherit;
+      }
+
       .amount-pos { color: var(--success); font-weight: 700; }
       .amount-neg { color: var(--red); font-weight: 700; }
 
@@ -795,7 +854,7 @@
           <a class="nav-item" href="#"><span class="nav-icon">📄</span> Statements</a>
           <a class="nav-item" href="#"><span class="nav-icon">🛡️</span> Security &amp; Audit</a>
           <div class="divider"></div>
-          <a class="nav-item" href="#"><span class="nav-icon">👥</span> User Management</a>
+          <a class="nav-item" href="#" data-admin-only hidden><span class="nav-icon">👥</span> Add Account</a>
           <a class="nav-item" href="#"><span class="nav-icon">⚙️</span> Settings</a>
         </nav>
 
@@ -826,8 +885,8 @@
           </div>
 
           <div class="top-actions">
-            <div class="bell">🔔</div>
-            <div class="mini-user">
+            <button class="bell" type="button" aria-label="Refresh dashboard" title="Refresh dashboard">↻</button>
+            <div class="mini-user" role="button" tabindex="0" aria-label="Sign in or sign out">
               <div class="mini-avatar">AM</div>
               <div id="topbar-username" style="font-weight:700;">Sign in</div>
             </div>
@@ -864,26 +923,26 @@
               <h2 class="section-title">Quick Actions</h2>
             </div>
             <div class="quick-grid">
-              <div class="action-tile" role="button" tabindex="0" data-action="deposit">
+              <button class="action-tile" type="button" data-action="deposit" disabled>
                 <div class="tile-icon tile-green">＋</div>
                 <div class="tile-label">Deposit</div>
                 <div class="tile-sub">Add funds</div>
-              </div>
-              <div class="action-tile" role="button" tabindex="0" data-action="withdrawal">
+              </button>
+              <button class="action-tile" type="button" data-action="withdrawal" disabled>
                 <div class="tile-icon tile-gold">↑</div>
                 <div class="tile-label">Withdraw</div>
                 <div class="tile-sub">Take out funds</div>
-              </div>
-              <div class="action-tile" role="button" tabindex="0" data-action="transfer">
+              </button>
+              <button class="action-tile" type="button" data-action="transfer" disabled>
                 <div class="tile-icon tile-purple">⇄</div>
                 <div class="tile-label">Transfer</div>
                 <div class="tile-sub">Send money</div>
-              </div>
-              <div class="action-tile" role="button" tabindex="0" data-action="statement">
+              </button>
+              <button class="action-tile" type="button" data-action="statement" disabled>
                 <div class="tile-icon tile-blue">📄</div>
                 <div class="tile-label">Statement</div>
                 <div class="tile-sub">View activity</div>
-              </div>
+              </button>
             </div>
           </section>
 
@@ -969,7 +1028,16 @@
                   <h2 class="section-title" style="margin: 0;">Recent Transactions</h2>
                   <div style="color: var(--muted); margin-top: 4px; font-size: 0.86rem;">A transparent record of your account activity</div>
                 </div>
-                <div class="date-pill" style="padding: 8px 12px; font-size: 0.8rem;">Filter ▾</div>
+                <div class="transaction-tools">
+                  <select id="transaction-filter" aria-label="Filter transactions">
+                    <option value="all">All activity</option>
+                    <option value="credit">Deposits</option>
+                    <option value="debit">Withdrawals</option>
+                    <option value="refused">Declined</option>
+                  </select>
+                  <button class="table-tool" id="toggle-transactions" type="button">View all</button>
+                  <button class="table-tool primary" id="export-transactions" type="button">Export CSV</button>
+                </div>
               </div>
 
               <table class="transactions-table">
@@ -998,12 +1066,16 @@
       </main>
     </div>
 
+    <dialog id="app-dialog" aria-labelledby="dialog-title"></dialog>
+
     <script>
       const storageKey = 'ledgerline-token';
       const pendingOperationKey = 'ledgerline-pending-operation';
       let activeUser = null;
       let accounts = [];
       let ledgerEntries = [];
+      let showAllTransactions = false;
+      let dashboardReady = false;
       const resultBox = document.createElement('div');
       resultBox.id = 'result-box';
       resultBox.style.display = 'none';
@@ -1035,15 +1107,92 @@
         resultBox.style.display = 'block';
       }
 
+      function openDialog(title, description, fields = [], submitLabel = 'Continue') {
+        const dialog = document.getElementById('app-dialog');
+        const form = document.createElement('form');
+        const heading = document.createElement('h2');
+        heading.id = 'dialog-title';
+        heading.textContent = title;
+        const summary = document.createElement('p');
+        summary.className = 'dialog-description';
+        summary.textContent = description;
+        form.append(heading, summary);
+
+        for (const field of fields) {
+          const label = document.createElement('label');
+          label.className = 'dialog-field';
+          label.textContent = field.label;
+          let control;
+          if (field.options) {
+            control = document.createElement('select');
+            for (const option of field.options) {
+              const item = document.createElement('option');
+              item.value = String(option.value);
+              item.textContent = option.label;
+              control.appendChild(item);
+            }
+          } else {
+            control = document.createElement('input');
+            control.type = field.type || 'text';
+            if (field.min !== undefined) control.min = String(field.min);
+            if (field.max !== undefined) control.max = String(field.max);
+            if (field.step !== undefined) control.step = String(field.step);
+            if (field.autocomplete) control.autocomplete = field.autocomplete;
+          }
+          control.name = field.name;
+          control.required = field.required !== false;
+          if (field.value !== undefined) control.value = String(field.value);
+          if (field.max !== undefined && control instanceof HTMLInputElement && control.type === 'text') {
+            control.maxLength = field.max;
+          }
+          label.appendChild(control);
+          form.appendChild(label);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'dialog-actions';
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.textContent = 'Cancel';
+        cancel.addEventListener('click', () => dialog.close('cancel'));
+        const submit = document.createElement('button');
+        submit.type = 'submit';
+        submit.className = 'primary';
+        submit.textContent = submitLabel;
+        actions.append(cancel, submit);
+        form.appendChild(actions);
+
+        return new Promise(resolve => {
+          let result = null;
+          dialog.addEventListener('close', () => resolve(result), { once: true });
+          form.addEventListener('submit', event => {
+            event.preventDefault();
+            result = Object.fromEntries(new FormData(form).entries());
+            dialog.close('submit');
+          });
+          dialog.replaceChildren(form);
+          dialog.showModal();
+        });
+      }
+
+      async function confirmAction(title, description, actionLabel) {
+        return (await openDialog(title, description, [], actionLabel)) !== null;
+      }
+
       function setSession(token, user = null) {
         if (token) {
           localStorage.setItem(storageKey, token);
         } else {
           localStorage.removeItem(storageKey);
           sessionStorage.removeItem(pendingOperationKey);
+          dashboardReady = false;
           activeUser = null;
           accounts = [];
           ledgerEntries = [];
+          showAllTransactions = false;
+          document.querySelector('.search input').value = '';
+          document.getElementById('transaction-filter').value = 'all';
+          document.getElementById('toggle-transactions').textContent = 'View all';
           document.getElementById('account-list-items').textContent = 'Sign in to load your accounts.';
           document.getElementById('transaction-rows').replaceChildren();
           document.getElementById('transaction-count').textContent = 'Sign in to load account activity.';
@@ -1061,6 +1210,11 @@
         document.getElementById('sidebar-username').textContent = user ? user.username : 'Guest';
         document.getElementById('sidebar-role').textContent = user ? user.role.replaceAll('_', ' ') : 'Sign in to continue';
         document.getElementById('welcome-username').textContent = user ? user.username : 'Guest';
+        document.querySelector('[data-admin-only]').hidden = !user || user.role !== 'admin';
+        document.querySelectorAll('.action-tile').forEach(tile => {
+          tile.disabled = !user || !dashboardReady ||
+            (tile.dataset.action !== 'statement' && user.role === 'auditor');
+        });
       }
 
       async function api(path, options = {}) {
@@ -1098,7 +1252,12 @@
       function renderAccounts() {
         const container = document.getElementById('account-list-items');
         container.replaceChildren();
-        for (const account of accounts) {
+        const query = document.querySelector('.search input').value.trim().toLowerCase();
+        const visibleAccounts = accounts.filter(account =>
+          [account.name, account.owner_username, account.id]
+            .some(value => String(value).toLowerCase().includes(query))
+        );
+        for (const account of visibleAccounts) {
           const item = document.createElement('div');
           item.className = 'account-list-item';
           item.tabIndex = 0;
@@ -1140,23 +1299,30 @@
           });
           container.appendChild(item);
         }
-        if (accounts.length === 0) {
+        if (visibleAccounts.length === 0) {
           const empty = document.createElement('div');
           empty.className = 'account-meta';
-          empty.textContent = 'No accounts are available for this user.';
+          empty.textContent = accounts.length ? 'No matching accounts.' : 'No accounts are available for this user.';
           container.appendChild(empty);
         }
       }
 
-      function renderTransactions() {
+      function filteredTransactions() {
         const query = document.querySelector('.search input').value.trim().toLowerCase();
-        const filtered = ledgerEntries.filter(entry =>
-          [entry.description, entry.actor_username, entry.kind, entry.operation_id]
+        const kind = document.getElementById('transaction-filter').value;
+        return ledgerEntries.filter(entry =>
+          (kind === 'all' || entry.kind === kind) &&
+          [entry.description, entry.actor_username, entry.kind, entry.operation_id, entry.account_id]
             .some(value => String(value || '').toLowerCase().includes(query))
         );
+      }
+
+      function renderTransactions() {
+        const filtered = filteredTransactions();
         const rows = document.getElementById('transaction-rows');
         rows.replaceChildren();
-        for (const entry of filtered.slice(0, 5)) {
+        const displayed = showAllTransactions ? filtered : filtered.slice(0, 5);
+        for (const entry of displayed) {
           const row = document.createElement('tr');
           const isRefused = entry.kind === 'refused';
           const columns = [
@@ -1184,7 +1350,43 @@
           rows.appendChild(row);
         }
         document.getElementById('transaction-count').textContent =
-          `Showing ${Math.min(filtered.length, 5)} of ${filtered.length} matching ledger entries.`;
+          `Showing ${displayed.length} of ${filtered.length} matching ledger entries.`;
+        document.getElementById('toggle-transactions').textContent =
+          showAllTransactions ? 'Show recent' : 'View all';
+      }
+
+      function exportTransactions() {
+        const entries = filteredTransactions();
+        if (!entries.length) {
+          showResult('There are no matching transactions to export.');
+          return;
+        }
+        const columns = ['Date', 'Account ID', 'Description', 'Type', 'Amount', 'Balance', 'Initiated By', 'Operation ID'];
+        const values = entries.map(entry => [
+          new Date(entry.created_at * 1000).toISOString(),
+          entry.account_id,
+          entry.description || '',
+          entry.kind,
+          entry.amount,
+          entry.running_balance,
+          entry.actor_username,
+          entry.operation_id
+        ]);
+        const csvValue = value => {
+          const text = String(value);
+          const safeText = /^[\t\r ]*[=+\-@]/.test(text) ? `'${text}` : text;
+          return `"${safeText.replaceAll('"', '""')}"`;
+        };
+        const csv = [columns, ...values].map(row => row.map(csvValue).join(',')).join('\r\n');
+        const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'ledgerline-transactions.csv';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showResult(`Exported ${entries.length} transaction${entries.length === 1 ? '' : 's'} to CSV.`);
       }
 
       async function refreshDashboard() {
@@ -1198,6 +1400,7 @@
         ledgerEntries = statements.flatMap(statement =>
           statement.entries.map(entry => ({ ...entry, account_id: statement.account_id }))
         ).sort((a, b) => b.id - a.id);
+        dashboardReady = true;
         setSession(getToken(), user);
         renderAccounts();
         renderTransactions();
@@ -1227,22 +1430,6 @@
         return false;
       }
 
-      function accountPrompt(message) {
-        if (!accounts.length) {
-          showResult('No account is available for this action.');
-          return null;
-        }
-        const choices = accounts.map(account => `${account.id}: ${account.name}`).join('\n');
-        const value = prompt(`${message}\n${choices}`, String(accounts[0].id));
-        if (value === null) return null;
-        const accountId = Number(value);
-        if (!Number.isSafeInteger(accountId) || !accounts.some(account => account.id === accountId)) {
-          showResult('Enter an account ID shown in the list.');
-          return null;
-        }
-        return accountId;
-      }
-
       async function submitOperation(path, payload) {
         sessionStorage.setItem(pendingOperationKey, JSON.stringify({ path, payload }));
         let result;
@@ -1253,20 +1440,37 @@
             sessionStorage.removeItem(pendingOperationKey);
             showResult(error.message);
           } else {
-            showResult(`${error.message}\nThe request key is saved; repeat the action and choose Retry to safely resend it.`);
+            showResult(`${error.message}\nThe request key is saved. Retry it from the next money action to avoid a duplicate transaction.`);
           }
-          throw error;
+          return false;
         }
         sessionStorage.removeItem(pendingOperationKey);
         showResult(JSON.stringify(result, null, 2));
-        await refreshDashboard();
+        try {
+          await refreshDashboard();
+        } catch (error) {
+          showResult(`Transaction completed, but the dashboard could not refresh: ${error.message}`);
+        }
+        return true;
       }
 
       async function retryPendingOperation() {
         const pending = sessionStorage.getItem(pendingOperationKey);
         if (!pending) return false;
-        if (!confirm('Retry the previous request with its original idempotency key?')) return true;
-        const operation = JSON.parse(pending);
+        const retry = await confirmAction(
+          'Retry previous request?',
+          'The original request key will be reused, so this is safe even if the earlier response was lost.',
+          'Retry'
+        );
+        if (!retry) return true;
+        let operation;
+        try {
+          operation = JSON.parse(pending);
+        } catch (error) {
+          sessionStorage.removeItem(pendingOperationKey);
+          showResult(`The saved request could not be read and was cleared: ${error.message}`);
+          return true;
+        }
         await submitOperation(operation.path, operation.payload);
         return true;
       }
@@ -1274,37 +1478,57 @@
       async function runMoneyAction(action) {
         if (!requireSignIn()) return;
         if (await retryPendingOperation()) return;
-        const fromId = accountPrompt(action === 'transfer' ? 'Choose the source account ID:' : 'Choose an account ID:');
-        if (fromId === null) return;
-        const amountText = prompt('Enter the amount in whole rupees:');
-        if (amountText === null) return;
-        const amount = Number(amountText);
+        if (!accounts.length) {
+          showResult('No account is available for this action.');
+          return;
+        }
+        const fields = [
+          {
+            name: 'account_id',
+            label: action === 'transfer' ? 'From account' : 'Account',
+            options: accounts.map(account => ({
+              value: account.id,
+              label: `${account.name} — ${formatMoney(account.balance)}`
+            }))
+          },
+          { name: 'amount', label: 'Amount (whole rupees)', type: 'number', min: 1, step: 1 }
+        ];
+        if (action === 'transfer') {
+          fields.push({ name: 'to_account_id', label: 'Destination account ID', type: 'number', min: 1, step: 1 });
+        }
+        fields.push({ name: 'description', label: 'Description (optional)', required: false, max: 500 });
+        const values = await openDialog(
+          action === 'deposit' ? 'Deposit funds' : action === 'withdrawal' ? 'Withdraw funds' : 'Transfer funds',
+          'Complete the details below. Amounts are entered in whole rupees.',
+          fields,
+          action === 'deposit' ? 'Deposit' : action === 'withdrawal' ? 'Withdraw' : 'Transfer'
+        );
+        if (!values) return;
+        const accountId = Number(values.account_id);
+        const amount = Number(values.amount);
         if (!Number.isSafeInteger(amount) || amount <= 0) {
           showResult('Amount must be a positive whole number of rupees.');
           return;
         }
-        const description = prompt('Add a transaction description (optional):') || '';
         const clientKey = crypto.randomUUID();
         if (action === 'transfer') {
-          const destinationText = prompt('Enter the destination account ID:');
-          if (destinationText === null) return;
-          const toId = Number(destinationText);
-          if (!Number.isSafeInteger(toId) || toId <= 0 || toId === fromId) {
+          const toId = Number(values.to_account_id);
+          if (!Number.isSafeInteger(toId) || toId <= 0 || toId === accountId) {
             showResult('Enter a valid destination account ID different from the source.');
             return;
           }
           await submitOperation('/transfers', {
-            from_account_id: fromId,
+            from_account_id: accountId,
             to_account_id: toId,
             amount,
-            description,
+            description: values.description || '',
             client_key: clientKey
           });
         } else {
           await submitOperation(action === 'deposit' ? '/deposits' : '/withdrawals', {
-            account_id: fromId,
+            account_id: accountId,
             amount,
-            description,
+            description: values.description || '',
             client_key: clientKey
           });
         }
@@ -1312,8 +1536,20 @@
 
       async function showStatement(accountId = null) {
         if (!requireSignIn()) return;
-        const selectedId = accountId || accountPrompt('Choose an account ID to view its statement:');
-        if (selectedId === null) return;
+        let selectedId = accountId;
+        if (!selectedId) {
+          if (!accounts.length) {
+            showResult('No account is available to show a statement.');
+            return;
+          }
+          const selection = await openDialog('Choose a statement', 'Select the account you want to review.', [{
+            name: 'account_id',
+            label: 'Account',
+            options: accounts.map(account => ({ value: account.id, label: account.name }))
+          }], 'Show statement');
+          if (!selection) return;
+          selectedId = Number(selection.account_id);
+        }
         try {
           const statement = await api(`/accounts/${selectedId}/statement`);
           showResult(JSON.stringify(statement, null, 2));
@@ -1324,13 +1560,13 @@
 
       async function createAccount() {
         if (!requireSignIn()) return;
-        const name = prompt('New account name:');
-        if (!name) return;
-        const owner = prompt('Owner username:');
-        if (!owner) return;
-        const overdraftText = prompt('Overdraft limit in whole rupees (0 for none):', '0');
-        if (overdraftText === null) return;
-        const overdraft_limit = Number(overdraftText);
+        const values = await openDialog('Add account', 'Create an account for an existing LedgerLine user.', [
+          { name: 'name', label: 'Account name', max: 120 },
+          { name: 'owner_username', label: 'Owner username', max: 80 },
+          { name: 'overdraft_limit', label: 'Overdraft limit (whole rupees)', type: 'number', min: 0, step: 1, value: 0 }
+        ], 'Create account');
+        if (!values) return;
+        const overdraft_limit = Number(values.overdraft_limit);
         if (!Number.isSafeInteger(overdraft_limit) || overdraft_limit < 0) {
           showResult('Overdraft limit must be a non-negative whole number.');
           return;
@@ -1338,7 +1574,7 @@
         try {
           const result = await api('/accounts', {
             method: 'POST',
-            body: JSON.stringify({ name, owner_username: owner, overdraft_limit })
+            body: JSON.stringify({ name: values.name.trim(), owner_username: values.owner_username.trim(), overdraft_limit })
           });
           showResult(JSON.stringify(result, null, 2));
           await refreshDashboard();
@@ -1352,45 +1588,53 @@
       })}`;
       document.querySelector('.mini-user').addEventListener('click', async () => {
         if (getToken()) {
-          if (confirm('Sign out of LedgerLine?')) {
-            setSession(null);
-            showResult('You have signed out.');
-          }
+          setSession(null);
+          showResult('You have signed out.');
           return;
         }
-        const username = prompt('Username:');
-        if (!username) return;
-        const password = prompt('Password:');
-        if (password === null) return;
+        const credentials = await openDialog('Sign in to LedgerLine', 'Use your LedgerLine account credentials.', [
+          { name: 'username', label: 'Username', autocomplete: 'username' },
+          { name: 'password', label: 'Password', type: 'password', autocomplete: 'current-password' }
+        ], 'Sign in');
+        if (!credentials) return;
         try {
           const data = await api('/login', {
             method: 'POST',
-            body: JSON.stringify({ username, password })
+            body: JSON.stringify(credentials)
           });
           setSession(data.token, data.user);
           await refreshDashboard();
           showResult(`Signed in as ${data.user.username} (${data.user.role}).`);
         } catch (error) {
+          setSession(null);
           showResult(error.message);
+        }
+      });
+      document.querySelector('.mini-user').addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          document.querySelector('.mini-user').click();
         }
       });
 
       document.querySelectorAll('.action-tile').forEach(tile => {
-        const activate = () => {
+        tile.addEventListener('click', () => {
           const action = tile.dataset.action;
-          if (action === 'statement') return showStatement();
-          runMoneyAction(action).catch(() => {});
-        };
-        tile.addEventListener('click', activate);
-        tile.addEventListener('keydown', event => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            activate();
-          }
+          const operation = action === 'statement' ? showStatement() : runMoneyAction(action);
+          operation.catch(error => showResult(error.message));
         });
       });
 
-      document.querySelector('.search input').addEventListener('input', renderTransactions);
+      document.querySelector('.search input').addEventListener('input', () => {
+        renderAccounts();
+        renderTransactions();
+      });
+      document.getElementById('transaction-filter').addEventListener('change', renderTransactions);
+      document.getElementById('toggle-transactions').addEventListener('click', () => {
+        showAllTransactions = !showAllTransactions;
+        renderTransactions();
+      });
+      document.getElementById('export-transactions').addEventListener('click', exportTransactions);
       document.querySelector('.bell').addEventListener('click', async () => {
         if (!requireSignIn()) return;
         try {
@@ -1422,7 +1666,7 @@
             } catch (error) {
               showResult(error.message);
             }
-          } else if (label.includes('User Management')) {
+          } else if (label.includes('Add Account')) {
             await createAccount();
           } else if (label.includes('Settings')) {
             showResult('Settings are managed by your LedgerLine administrator.');
