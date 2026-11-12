@@ -1,6 +1,30 @@
+# Virtual environments
 .venv/
-__pycache__/
-*.pyc
-ledger.db
-.vscode/
+venv/
+ENV/
 
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+
+# Databases
+*.db
+*.db-shm
+*.db-wal
+ledger.db*
+
+# Environment and secrets
+.env
+.env.local
+.env.production
+
+# IDEs
+.vscode/
+.idea/
+
+# Distribution / builds
+dist/
+build/
+*.egg-info/

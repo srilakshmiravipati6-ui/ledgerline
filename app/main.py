@@ -4,42 +4,99 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import sqlite3
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app.db import (
+    DB_PATH as DEFAULT_DB_PATH,
+    check_database_health,
+    get_db_connection,
+    init_database_schema,
+    is_postgres,
+)
+from app.ratelimit import check_redis_health, rate_limit
+from app.rbac import (
+    Permission,
+    UserRole,
+    get_role_permissions,
+    has_permission,
+    normalize_role,
+)
+
+logger = logging.getLogger("balancevault")
+
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "ledger.db"
+DB_PATH = DEFAULT_DB_PATH
+
 TOKEN_SECRET = os.environ.get("LEDGERLINE_TOKEN_SECRET")
 if not TOKEN_SECRET and os.environ.get("LEDGERLINE_ENV") == "production":
     raise RuntimeError("LEDGERLINE_TOKEN_SECRET must be set in production")
 if not TOKEN_SECRET:
     TOKEN_SECRET = secrets.token_urlsafe(32)
 
-app = FastAPI(title="LedgerLine", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: ensure database schema and triggers are initialized
+    init_db()
+    yield
+
+
+app = FastAPI(
+    title="BalanceVault",
+    version="2.0.0",
+    description="Enterprise Financial Transaction Ledger with PostgreSQL, Redis Rate Limiting, and Hash-Chained Double-Entry Accounting.",
+    lifespan=lifespan,
+)
+
+# CORS configuration
+origins_env = os.environ.get("CORS_ORIGINS", "*")
+allowed_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins if allowed_origins != ["*"] else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 security = HTTPBearer(auto_error=False)
 
 
-class UserRole:
-    ADMIN = "admin"
-    ACCOUNT_HOLDER = "account_holder"
-    AUDITOR = "auditor"
-
+# ============================================================================
+# Request / Response Models
+# ============================================================================
 
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=1, max_length=256)
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=8, max_length=256)
+    email: Optional[str] = Field(default=None, max_length=255)
+    initial_deposit: Optional[int] = Field(default=0, ge=0)
 
 
 class AccountCreateRequest(BaseModel):
@@ -63,13 +120,12 @@ class TransferRequest(BaseModel):
     client_key: str = Field(default_factory=lambda: f"auto-{uuid.uuid4().hex}", min_length=1, max_length=128)
 
 
-def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 30000")
-    return conn
+# ============================================================================
+# Database & Crypto Helpers
+# ============================================================================
+
+def get_db():
+    return get_db_connection(DB_PATH)
 
 
 def hash_password(password: str) -> str:
@@ -137,20 +193,30 @@ def current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
         row = conn.execute("SELECT * FROM users WHERE username = ?", (payload["sub"],)).fetchone()
     if row is None:
         raise HTTPException(status_code=401, detail="User not recognised")
-    return dict(row)
+    user_dict = dict(row)
+    user_dict["permissions"] = get_role_permissions(user_dict["role"])
+    return user_dict
 
 
 def require_admin(user: dict[str, Any]) -> None:
-    if user["role"] != UserRole.ADMIN:
+    if user["role"] not in (UserRole.SUPER_ADMIN.value, UserRole.ADMIN.value, "admin", "super_admin"):
         raise HTTPException(status_code=403, detail="Administrator only")
 
 
-def account_for_user(user: dict[str, Any], account_id: int, *, require_owner: bool = False) -> sqlite3.Row:
+def require_permission(permission: Permission | str):
+    def dependency(user: dict[str, Any] = Depends(current_user)):
+        if not has_permission(user["role"], permission):
+            raise HTTPException(status_code=403, detail=f"Permission denied: requires {permission}")
+        return user
+    return dependency
+
+
+def account_for_user(user: dict[str, Any], account_id: int, *, require_owner: bool = False) -> dict[str, Any]:
     with get_db() as conn:
         row = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Account not found")
-    if user["role"] in (UserRole.ADMIN, UserRole.AUDITOR):
+    if user["role"] in (UserRole.SUPER_ADMIN.value, UserRole.ADMIN.value, "admin", "super_admin", UserRole.AUDITOR.value):
         return row
     if require_owner and row["owner_username"] != user["username"]:
         raise HTTPException(status_code=403, detail="Not permitted to modify this account")
@@ -159,12 +225,23 @@ def account_for_user(user: dict[str, Any], account_id: int, *, require_owner: bo
     return row
 
 
-def get_last_hash(conn: sqlite3.Connection) -> str:
+def get_last_hash(conn: Any) -> str:
     row = conn.execute("SELECT hash_value FROM ledger_entries ORDER BY id DESC LIMIT 1").fetchone()
     return row["hash_value"] if row else "genesis"
 
 
-def append_ledger_event(conn: sqlite3.Connection, *, account_id: int, kind: str, amount: int, running_balance: int, description: str, actor_user: dict[str, Any], request_key: str, operation_id: str) -> str:
+def append_ledger_event(
+    conn: Any,
+    *,
+    account_id: int,
+    kind: str,
+    amount: int,
+    running_balance: int,
+    description: str,
+    actor_user: dict[str, Any],
+    request_key: str,
+    operation_id: str,
+) -> str:
     prev_hash = get_last_hash(conn)
     payload = {
         "account_id": account_id,
@@ -200,7 +277,7 @@ def append_ledger_event(conn: sqlite3.Connection, *, account_id: int, kind: str,
 
 
 def read_idempotency(
-    conn: sqlite3.Connection, client_key: str, actor_user_id: int, request_hash: str
+    conn: Any, client_key: str, actor_user_id: int, request_hash: str
 ) -> Optional[dict[str, Any]]:
     row = conn.execute(
         "SELECT response_json, actor_user_id, request_hash FROM idempotency_keys WHERE client_key = ?",
@@ -213,6 +290,26 @@ def read_idempotency(
     data = json.loads(row["response_json"])
     data["idempotent"] = True
     return data
+
+
+def store_idempotency(
+    conn: Any,
+    *,
+    client_key: str,
+    response: dict[str, Any],
+    actor_user_id: int,
+    request_hash: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO idempotency_keys (client_key, response_json, created_at, actor_user_id, request_hash) VALUES (?, ?, ?, ?, ?)",
+        (
+            client_key,
+            json.dumps(response),
+            int(time.time()),
+            actor_user_id,
+            request_hash,
+        ),
+    )
 
 
 def verify_ledger_chain() -> bool:
@@ -259,112 +356,64 @@ def init_db(reset: bool = False) -> None:
                 "Production requires a unique password of at least 12 characters for each seeded user"
             )
         initial_users = [
-            ("admin", required_passwords["admin"], UserRole.ADMIN),
-            ("alice", required_passwords["alice"], UserRole.ACCOUNT_HOLDER),
-            ("bob", required_passwords["bob"], UserRole.ACCOUNT_HOLDER),
-            ("auditor", required_passwords["auditor"], UserRole.AUDITOR),
+            ("admin", required_passwords["admin"], UserRole.ADMIN.value),
+            ("alice", required_passwords["alice"], UserRole.ACCOUNT_HOLDER.value),
+            ("bob", required_passwords["bob"], UserRole.ACCOUNT_HOLDER.value),
+            ("auditor", required_passwords["auditor"], UserRole.AUDITOR.value),
         ]
     else:
         initial_users = [
-            ("admin", "adminpass", UserRole.ADMIN),
-            ("alice", "pass123", UserRole.ACCOUNT_HOLDER),
-            ("bob", "pass123", UserRole.ACCOUNT_HOLDER),
-            ("auditor", "pass123", UserRole.AUDITOR),
+            ("admin", "adminpass", UserRole.ADMIN.value),
+            ("alice", "pass123", UserRole.ACCOUNT_HOLDER.value),
+            ("bob", "pass123", UserRole.ACCOUNT_HOLDER.value),
+            ("auditor", "pass123", UserRole.AUDITOR.value),
         ]
 
-    with sqlite3.connect(DB_PATH, timeout=30) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin', 'account_holder', 'auditor'))
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS accounts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                owner_username TEXT NOT NULL,
-                balance INTEGER NOT NULL DEFAULT 0,
-                overdraft_limit INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY(owner_username) REFERENCES users(username)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ledger_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                account_id INTEGER NOT NULL,
-                kind TEXT NOT NULL CHECK(kind IN ('credit', 'debit', 'refused')),
-                amount INTEGER NOT NULL,
-                running_balance INTEGER NOT NULL,
-                description TEXT,
-                actor_user_id INTEGER,
-                request_key TEXT,
-                operation_id TEXT NOT NULL,
-                actor_username TEXT NOT NULL,
-                prev_hash TEXT NOT NULL,
-                hash_value TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                FOREIGN KEY(account_id) REFERENCES accounts(id)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS idempotency_keys (
-                client_key TEXT PRIMARY KEY,
-                response_json TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                actor_user_id INTEGER,
-                request_hash TEXT
-            )
-            """
-        )
+    with get_db() as conn:
+        init_database_schema(conn)
 
-        idempotency_columns = {
-            row["name"] for row in conn.execute("PRAGMA table_info(idempotency_keys)")
-        }
-        if "actor_user_id" not in idempotency_columns:
-            conn.execute("ALTER TABLE idempotency_keys ADD COLUMN actor_user_id INTEGER")
-        if "request_hash" not in idempotency_columns:
-            conn.execute("ALTER TABLE idempotency_keys ADD COLUMN request_hash TEXT")
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_username)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ledger_account_id ON ledger_entries(account_id, id)"
-        )
+        if not is_postgres():
+            # Check legacy sqlite migrations
+            idempotency_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(idempotency_keys)").fetchall()
+            }
+            if "actor_user_id" not in idempotency_columns:
+                conn.execute("ALTER TABLE idempotency_keys ADD COLUMN actor_user_id INTEGER")
+            if "request_hash" not in idempotency_columns:
+                conn.execute("ALTER TABLE idempotency_keys ADD COLUMN request_hash TEXT")
 
         if reset:
-            conn.execute("DROP TRIGGER IF EXISTS ledger_entries_no_update")
-            conn.execute("DROP TRIGGER IF EXISTS ledger_entries_no_delete")
+            if not is_postgres():
+                conn.execute("DROP TRIGGER IF EXISTS ledger_entries_no_update")
+                conn.execute("DROP TRIGGER IF EXISTS ledger_entries_no_delete")
+                conn.execute("DROP TRIGGER IF EXISTS prevent_ledger_update")
+                conn.execute("DROP TRIGGER IF EXISTS prevent_ledger_delete")
             conn.execute("DELETE FROM idempotency_keys")
             conn.execute("DELETE FROM ledger_entries")
             conn.execute("DELETE FROM accounts")
             conn.execute("DELETE FROM users")
+            conn.commit()
+
+        user_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        } if not is_postgres() else {"id", "username", "password", "role", "email", "created_at"}
 
         for username, password, role in initial_users:
             existing = conn.execute(
                 "SELECT id, password FROM users WHERE username = ?", (username,)
             ).fetchone()
             if existing is None:
-                conn.execute(
-                    "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-                    (username, hash_password(password), role),
-                )
-            elif production_mode and not verify_password(
-                password, existing["password"]
-            ):
+                if "created_at" in user_cols:
+                    conn.execute(
+                        "INSERT INTO users (username, password, role, created_at) VALUES (?, ?, ?, ?)",
+                        (username, hash_password(password), role, int(time.time())),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                        (username, hash_password(password), role),
+                    )
+            elif production_mode and not verify_password(password, existing["password"]):
                 conn.execute(
                     "UPDATE users SET password = ?, role = ? WHERE id = ?",
                     (hash_password(password), role, existing["id"]),
@@ -376,6 +425,11 @@ def init_db(reset: bool = False) -> None:
                     "UPDATE users SET password = ? WHERE id = ?",
                     (hash_password(row["password"]), row["id"]),
                 )
+        conn.commit()
+
+        acc_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(accounts)").fetchall()
+        } if not is_postgres() else {"id", "name", "owner_username", "balance", "overdraft_limit", "created_at"}
 
         initial_accounts = [
             ("Alice Checking", "alice", 1000, 0),
@@ -383,50 +437,67 @@ def init_db(reset: bool = False) -> None:
             ("Treasury", "admin", 0, 0),
         ]
         for name, owner, balance, overdraft in initial_accounts:
-            conn.execute("INSERT OR IGNORE INTO accounts (name, owner_username, balance, overdraft_limit) VALUES (?, ?, ?, ?)", (name, owner, balance, overdraft))
+            existing_acc = conn.execute("SELECT id FROM accounts WHERE name = ?", (name,)).fetchone()
+            if not existing_acc:
+                if "created_at" in acc_cols:
+                    conn.execute(
+                        "INSERT INTO accounts (name, owner_username, balance, overdraft_limit, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (name, owner, balance, overdraft, int(time.time())),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO accounts (name, owner_username, balance, overdraft_limit) VALUES (?, ?, ?, ?)",
+                        (name, owner, balance, overdraft),
+                    )
+        conn.commit()
 
         seed_ledger = reset or conn.execute("SELECT 1 FROM ledger_entries LIMIT 1").fetchone() is None
         if seed_ledger:
             admin = conn.execute("SELECT id, username FROM users WHERE username = 'admin'").fetchone()
-            account_rows = conn.execute("SELECT * FROM accounts ORDER BY id ASC").fetchall()
-            for row in account_rows:
-                append_ledger_event(
-                    conn,
-                    account_id=row["id"],
-                    kind="credit",
-                    amount=row["balance"],
-                    running_balance=row["balance"],
-                    description="opening balance",
-                    actor_user={"id": admin["id"], "username": admin["username"]},
-                    request_key=f"seed-{row['id']}",
-                    operation_id=f"seed-op-{row['id']}",
-                )
+            if admin:
+                account_rows = conn.execute("SELECT * FROM accounts ORDER BY id ASC").fetchall()
+                for row in account_rows:
+                    append_ledger_event(
+                        conn,
+                        account_id=row["id"],
+                        kind="credit",
+                        amount=row["balance"],
+                        running_balance=row["balance"],
+                        description="opening balance",
+                        actor_user={"id": admin["id"], "username": admin["username"]},
+                        request_key=f"seed-{row['id']}",
+                        operation_id=f"seed-op-{row['id']}",
+                    )
+                conn.commit()
 
-        conn.execute(
-            """
-            CREATE TRIGGER IF NOT EXISTS ledger_entries_no_update
-            BEFORE UPDATE ON ledger_entries
-            BEGIN
-                SELECT RAISE(ABORT, 'ledger entries are append-only');
-            END
-            """
-        )
-        conn.execute(
-            """
-            CREATE TRIGGER IF NOT EXISTS ledger_entries_no_delete
-            BEFORE DELETE ON ledger_entries
-            BEGIN
-                SELECT RAISE(ABORT, 'ledger entries are append-only');
-            END
-            """
-        )
+        # Re-verify triggers for SQLite
+        if not is_postgres():
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS prevent_ledger_update
+                BEFORE UPDATE ON ledger_entries
+                BEGIN
+                    SELECT RAISE(FAIL, 'ledger_entries is append-only');
+                END;
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS prevent_ledger_delete
+                BEFORE DELETE ON ledger_entries
+                BEGIN
+                    SELECT RAISE(FAIL, 'ledger_entries is append-only');
+                END;
+                """
+            )
+            conn.commit()
 
 
-def require_money_permission(user: dict[str, Any], account: sqlite3.Row) -> None:
-    if user["role"] == UserRole.ADMIN:
+def require_money_permission(user: dict[str, Any], account: dict[str, Any]) -> None:
+    if user["role"] in (UserRole.SUPER_ADMIN.value, UserRole.ADMIN.value, "admin", "super_admin"):
         return
     if (
-        user["role"] != UserRole.ACCOUNT_HOLDER
+        user["role"] != UserRole.ACCOUNT_HOLDER.value
         or account["owner_username"] != user["username"]
     ):
         raise HTTPException(status_code=403, detail="Not permitted to move this account's money")
@@ -446,33 +517,134 @@ def request_fingerprint(operation: str, payload: Any) -> str:
             for key, value in vars(payload).items()
             if key != "client_key"
         }
-    return hash_payload(
-        {"operation": operation, "payload": payload_data}
-    )
+    return hash_payload({"operation": operation, "payload": payload_data})
 
 
-def store_idempotency(
-    conn: sqlite3.Connection,
-    *,
-    client_key: str,
-    response: dict[str, Any],
-    actor_user_id: int,
-    request_hash: str,
-) -> None:
-    conn.execute(
-        "INSERT INTO idempotency_keys (client_key, response_json, created_at, actor_user_id, request_hash) VALUES (?, ?, ?, ?, ?)",
-        (
-            client_key,
-            json.dumps(response),
-            int(time.time()),
-            actor_user_id,
-            request_hash,
-        ),
-    )
+# ============================================================================
+# Health & Readiness Endpoints
+# ============================================================================
+
+@app.get("/health")
+def health_check():
+    """Liveness probe: verifies service availability."""
+    return {
+        "status": "ok",
+        "app": "BalanceVault",
+        "version": "2.0.0",
+        "timestamp": int(time.time()),
+    }
 
 
+@app.get("/ready")
+def readiness_check(response: Response):
+    """Readiness probe: verifies database and redis connectivity."""
+    db_ok, db_status = check_database_health()
+    redis_ok, redis_status = check_redis_health()
+
+    is_ready = db_ok
+    if not is_ready:
+        response.status_code = 503
+        return {
+            "status": "not_ready",
+            "app": "BalanceVault",
+            "database": db_status,
+            "redis": redis_status,
+            "timestamp": int(time.time()),
+        }
+
+    return {
+        "status": "ready",
+        "app": "BalanceVault",
+        "database": db_status,
+        "redis": redis_status,
+        "timestamp": int(time.time()),
+    }
+
+
+# ============================================================================
+# User Onboarding & Authentication Endpoints
+# ============================================================================
+
+@app.post("/auth/register")
+def register(
+    payload: RegisterRequest,
+    _rate_limit: bool = Depends(rate_limit(limit=10, window_seconds=60, key_prefix="auth_register")),
+):
+    """Register a new user, create an account, and issue authentication token."""
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute("SELECT id FROM users WHERE username = ?", (payload.username,)).fetchone()
+            if existing:
+                raise HTTPException(status_code=409, detail="Username already registered")
+
+            now = int(time.time())
+            hashed = hash_password(payload.password)
+            role = UserRole.ACCOUNT_HOLDER.value
+
+            conn.execute(
+                "INSERT INTO users (username, password, role, email, created_at) VALUES (?, ?, ?, ?, ?)",
+                (payload.username, hashed, role, payload.email, now),
+            )
+            user_row = conn.execute("SELECT * FROM users WHERE username = ?", (payload.username,)).fetchone()
+            user_id = user_row["id"]
+
+            # Automatically provision default account
+            account_name = f"{payload.username.capitalize()} Primary Account"
+            initial_balance = payload.initial_deposit or 0
+
+            conn.execute(
+                "INSERT INTO accounts (name, owner_username, balance, overdraft_limit, created_at) VALUES (?, ?, ?, ?, ?)",
+                (account_name, payload.username, initial_balance, 0, now),
+            )
+            acc_row = conn.execute("SELECT id FROM accounts WHERE name = ?", (account_name,)).fetchone()
+            account_id = acc_row["id"]
+
+            # Ledger record for opening balance
+            append_ledger_event(
+                conn,
+                account_id=account_id,
+                kind="credit",
+                amount=initial_balance,
+                running_balance=initial_balance,
+                description="Opening account provisioned",
+                actor_user={"id": user_id, "username": payload.username},
+                request_key=f"onboard-{account_id}",
+                operation_id=f"onboard-op-{account_id}",
+            )
+            conn.commit()
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+
+    token = tokenise(payload.username, role)
+    return {
+        "message": "User registered successfully",
+        "token": token,
+        "user": {
+            "id": user_id,
+            "username": payload.username,
+            "role": role,
+            "email": payload.email,
+            "permissions": get_role_permissions(role),
+        },
+        "account": {
+            "id": account_id,
+            "name": account_name,
+            "balance": initial_balance,
+        },
+    }
+
+
+@app.post("/auth/login")
 @app.post("/login")
-def login(payload: LoginRequest):
+def login(
+    payload: LoginRequest,
+    _rate_limit: bool = Depends(rate_limit(limit=15, window_seconds=60, key_prefix="auth_login")),
+):
     with get_db() as conn:
         row = conn.execute("SELECT * FROM users WHERE username = ?", (payload.username,)).fetchone()
         if row is None or not verify_password(payload.password, row["password"]):
@@ -482,21 +654,66 @@ def login(payload: LoginRequest):
                 "UPDATE users SET password = ? WHERE id = ?",
                 (hash_password(payload.password), row["id"]),
             )
-    if row is None:
-        raise HTTPException(status_code=401, detail="Invalid username/password")
+            conn.commit()
     token = tokenise(row["username"], row["role"])
-    return {"token": token, "user": {"username": row["username"], "role": row["role"]}}
+    return {
+        "token": token,
+        "user": {
+            "id": row["id"],
+            "username": row["username"],
+            "role": row["role"],
+            "permissions": get_role_permissions(row["role"]),
+        },
+    }
 
 
+@app.get("/auth/me")
 @app.get("/me")
-def get_current_user(user: dict[str, Any] = Depends(current_user)):
-    return {"username": user["username"], "role": user["role"]}
+def get_current_user_profile(user: dict[str, Any] = Depends(current_user)):
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "role": user["role"],
+        "email": user.get("email"),
+        "permissions": get_role_permissions(user["role"]),
+    }
 
+
+@app.post("/auth/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    user: dict[str, Any] = Depends(current_user),
+):
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT id, password FROM users WHERE username = ?",
+                (user["username"],)
+            ).fetchone()
+            if not row or not verify_password(payload.old_password, row["password"]):
+                raise HTTPException(status_code=400, detail="Current password is incorrect")
+            new_hash = hash_password(payload.new_password)
+            conn.execute(
+                "UPDATE users SET password = ? WHERE id = ?",
+                (new_hash, row["id"])
+            )
+            conn.commit()
+            return {"status": "ok", "message": "Password updated successfully"}
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception as e:
+            conn.rollback()
+            raise HTTPException(status_code=500, detail=str(e))
+# ============================================================================
+# Account & Ledger Endpoints
+# ============================================================================
 
 @app.get("/accounts")
 def list_accounts(user: dict[str, Any] = Depends(current_user)):
     with get_db() as conn:
-        if user["role"] in (UserRole.ADMIN, UserRole.AUDITOR):
+        if has_permission(user["role"], Permission.ACCOUNTS_READ_ALL):
             rows = conn.execute("SELECT * FROM accounts ORDER BY id ASC").fetchall()
         else:
             rows = conn.execute("SELECT * FROM accounts WHERE owner_username = ? ORDER BY id ASC", (user["username"],)).fetchall()
@@ -504,7 +721,10 @@ def list_accounts(user: dict[str, Any] = Depends(current_user)):
 
 
 @app.post("/accounts")
-def create_account(payload: AccountCreateRequest, user: dict[str, Any] = Depends(current_user)):
+def create_account(
+    payload: AccountCreateRequest,
+    user: dict[str, Any] = Depends(require_permission(Permission.ACCOUNTS_CREATE)),
+):
     require_admin(user)
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -514,11 +734,20 @@ def create_account(payload: AccountCreateRequest, user: dict[str, Any] = Depends
             ).fetchone()
             if owner is None:
                 raise HTTPException(status_code=404, detail="Account owner not found")
-            cursor = conn.execute(
-                "INSERT INTO accounts (name, owner_username, balance, overdraft_limit) VALUES (?, ?, 0, ?)",
-                (payload.name, payload.owner_username, payload.overdraft_limit),
+
+            # Check duplicate name
+            existing = conn.execute("SELECT id FROM accounts WHERE name = ?", (payload.name,)).fetchone()
+            if existing:
+                raise HTTPException(status_code=409, detail="Account name already exists")
+
+            now = int(time.time())
+            conn.execute(
+                "INSERT INTO accounts (name, owner_username, balance, overdraft_limit, created_at) VALUES (?, ?, 0, ?, ?)",
+                (payload.name, payload.owner_username, payload.overdraft_limit, now),
             )
-            account_id = cursor.lastrowid
+            account_row = conn.execute("SELECT id FROM accounts WHERE name = ?", (payload.name,)).fetchone()
+            account_id = account_row["id"]
+
             append_ledger_event(
                 conn,
                 account_id=account_id,
@@ -530,14 +759,22 @@ def create_account(payload: AccountCreateRequest, user: dict[str, Any] = Depends
                 request_key=f"account-create-{account_id}",
                 operation_id=f"account-create-{account_id}",
             )
-            conn.execute("COMMIT")
-        except sqlite3.IntegrityError as exc:
-            conn.execute("ROLLBACK")
-            raise HTTPException(status_code=409, detail="Account name already exists") from exc
-        except Exception:
-            conn.execute("ROLLBACK")
+            conn.commit()
+        except HTTPException:
+            conn.rollback()
             raise
-    return {"id": account_id, "name": payload.name, "owner_username": payload.owner_username, "balance": 0, "overdraft_limit": payload.overdraft_limit}
+        except (sqlite3.IntegrityError, Exception) as exc:
+            conn.rollback()
+            if "UNIQUE" in str(exc).upper() or "ALREADY EXISTS" in str(exc).upper():
+                raise HTTPException(status_code=409, detail="Account name already exists") from exc
+            raise
+    return {
+        "id": account_id,
+        "name": payload.name,
+        "owner_username": payload.owner_username,
+        "balance": 0,
+        "overdraft_limit": payload.overdraft_limit,
+    }
 
 
 @app.get("/accounts/{account_id}")
@@ -554,32 +791,105 @@ def get_statement(account_id: int, user: dict[str, Any] = Depends(current_user))
     return {"account_id": account_id, "entries": [dict(r) for r in rows], "hash_valid": verify_ledger_chain()}
 
 
+@app.get("/accounts/{account_id}/statement/csv")
+def get_statement_csv(account_id: int, user: dict[str, Any] = Depends(current_user)):
+    acc = account_for_user(user, account_id)
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM ledger_entries WHERE account_id = ? ORDER BY id ASC", (account_id,)
+        ).fetchall()
+
+    import csv
+    import io
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Entry ID",
+        "Timestamp",
+        "Date (UTC)",
+        "Account ID",
+        "Account Name",
+        "Type",
+        "Amount (INR)",
+        "Balance After (INR)",
+        "Description",
+        "Previous Hash",
+        "Current Hash",
+    ])
+    for r in rows:
+        ts = r["created_at"]
+        dt = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts))
+        writer.writerow([
+            r["id"],
+            ts,
+            dt,
+            account_id,
+            acc["name"],
+            r["kind"],
+            r["amount"],
+            r["running_balance"],
+            r["description"],
+            r["prev_hash"],
+            r["hash_value"],
+        ])
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=balancevault_statement_acc_{account_id}.csv"},
+    )
+
+
 @app.get("/ledger/verify")
-def verify_ledger(user: dict[str, Any] = Depends(current_user)):
-    if user["role"] not in (UserRole.ADMIN, UserRole.AUDITOR):
-        raise HTTPException(status_code=403, detail="Administrators and auditors only")
+def verify_ledger(user: dict[str, Any] = Depends(require_permission(Permission.LEDGER_VERIFY))):
     return {"hash_valid": verify_ledger_chain()}
 
 
+@app.get("/ledger/entries")
+def get_ledger_entries(
+    limit: int = 100,
+    user: dict[str, Any] = Depends(require_permission(Permission.LEDGER_READ_ALL)),
+):
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM ledger_entries ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return {
+        "entries": [dict(r) for r in rows],
+        "hash_valid": verify_ledger_chain(),
+        "total": len(rows),
+    }
+# ============================================================================
+# Financial Transaction Endpoints (With Concurrency Row-Locking & Rate Limiting)
+# ============================================================================
+
 @app.post("/deposits")
-def create_deposit(payload: MoneyRequest, user: dict[str, Any] = Depends(current_user)):
+def create_deposit(
+    payload: MoneyRequest,
+    user: dict[str, Any] = Depends(current_user),
+    _rate_limit: bool = Depends(rate_limit(limit=60, window_seconds=60, key_prefix="tx_deposit")),
+):
     account = account_for_user(user, payload.account_id, require_owner=True)
     require_money_permission(user, account)
     fingerprint = request_fingerprint("deposit", payload)
+
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            existing = read_idempotency(
-                conn, payload.client_key, user["id"], fingerprint
-            )
+            # Row-level lock on PostgreSQL
+            if is_postgres():
+                conn.execute("SELECT * FROM accounts WHERE id = ? FOR UPDATE", (payload.account_id,))
+
+            existing = read_idempotency(conn, payload.client_key, user["id"], fingerprint)
             if existing is not None:
-                conn.execute("COMMIT")
+                conn.commit()
                 return existing
 
             current = conn.execute("SELECT * FROM accounts WHERE id = ?", (payload.account_id,)).fetchone()
             new_balance = current["balance"] + payload.amount
             conn.execute("UPDATE accounts SET balance = ? WHERE id = ?", (new_balance, payload.account_id))
             operation_id = f"deposit:{payload.client_key}"
+
             append_ledger_event(
                 conn,
                 account_id=payload.account_id,
@@ -606,31 +916,39 @@ def create_deposit(payload: MoneyRequest, user: dict[str, Any] = Depends(current
                 actor_user_id=user["id"],
                 request_hash=fingerprint,
             )
-            conn.execute("COMMIT")
+            conn.commit()
             return response
         except Exception:
-            conn.execute("ROLLBACK")
+            conn.rollback()
             raise
 
 
 @app.post("/withdrawals")
-def create_withdrawal(payload: MoneyRequest, user: dict[str, Any] = Depends(current_user)):
+def create_withdrawal(
+    payload: MoneyRequest,
+    user: dict[str, Any] = Depends(current_user),
+    _rate_limit: bool = Depends(rate_limit(limit=60, window_seconds=60, key_prefix="tx_withdraw")),
+):
     account = account_for_user(user, payload.account_id, require_owner=True)
     require_money_permission(user, account)
     fingerprint = request_fingerprint("withdrawal", payload)
+
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            existing = read_idempotency(
-                conn, payload.client_key, user["id"], fingerprint
-            )
+            # Row-level lock on PostgreSQL
+            if is_postgres():
+                conn.execute("SELECT * FROM accounts WHERE id = ? FOR UPDATE", (payload.account_id,))
+
+            existing = read_idempotency(conn, payload.client_key, user["id"], fingerprint)
             if existing is not None:
-                conn.execute("COMMIT")
+                conn.commit()
                 return existing
 
             current = conn.execute("SELECT * FROM accounts WHERE id = ?", (payload.account_id,)).fetchone()
             new_balance = current["balance"] - payload.amount
             operation_id = f"withdraw:{payload.client_key}"
+
             if new_balance < -account["overdraft_limit"]:
                 response = {
                     "id": operation_id,
@@ -659,7 +977,7 @@ def create_withdrawal(payload: MoneyRequest, user: dict[str, Any] = Depends(curr
                     actor_user_id=user["id"],
                     request_hash=fingerprint,
                 )
-                conn.execute("COMMIT")
+                conn.commit()
                 return response
 
             conn.execute("UPDATE accounts SET balance = ? WHERE id = ?", (new_balance, payload.account_id))
@@ -689,15 +1007,19 @@ def create_withdrawal(payload: MoneyRequest, user: dict[str, Any] = Depends(curr
                 actor_user_id=user["id"],
                 request_hash=fingerprint,
             )
-            conn.execute("COMMIT")
+            conn.commit()
             return response
         except Exception:
-            conn.execute("ROLLBACK")
+            conn.rollback()
             raise
 
 
 @app.post("/transfers")
-def create_transfer(payload: TransferRequest, user: dict[str, Any] = Depends(current_user)):
+def create_transfer(
+    payload: TransferRequest,
+    user: dict[str, Any] = Depends(current_user),
+    _rate_limit: bool = Depends(rate_limit(limit=60, window_seconds=60, key_prefix="tx_transfer")),
+):
     if payload.from_account_id == payload.to_account_id:
         raise HTTPException(status_code=400, detail="Cannot transfer to the same account")
 
@@ -705,17 +1027,23 @@ def create_transfer(payload: TransferRequest, user: dict[str, Any] = Depends(cur
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            # Deterministic Row-Level Lock Order in PostgreSQL to prevent deadlocks
+            if is_postgres():
+                first_id, second_id = sorted([payload.from_account_id, payload.to_account_id])
+                conn.execute(
+                    "SELECT * FROM accounts WHERE id IN (?, ?) ORDER BY id FOR UPDATE",
+                    (first_id, second_id),
+                )
+
             from_account = conn.execute("SELECT * FROM accounts WHERE id = ?", (payload.from_account_id,)).fetchone()
             to_account = conn.execute("SELECT * FROM accounts WHERE id = ?", (payload.to_account_id,)).fetchone()
             if from_account is None or to_account is None:
                 raise HTTPException(status_code=404, detail="Account not found")
             require_money_permission(user, from_account)
 
-            existing = read_idempotency(
-                conn, payload.client_key, user["id"], fingerprint
-            )
+            existing = read_idempotency(conn, payload.client_key, user["id"], fingerprint)
             if existing is not None:
-                conn.execute("COMMIT")
+                conn.commit()
                 return existing
 
             new_from = from_account["balance"] - payload.amount
@@ -747,7 +1075,7 @@ def create_transfer(payload: TransferRequest, user: dict[str, Any] = Depends(cur
                     actor_user_id=user["id"],
                     request_hash=fingerprint,
                 )
-                conn.execute("COMMIT")
+                conn.commit()
                 return response
 
             new_to = to_account["balance"] + payload.amount
@@ -794,18 +1122,13 @@ def create_transfer(payload: TransferRequest, user: dict[str, Any] = Depends(cur
                 actor_user_id=user["id"],
                 request_hash=fingerprint,
             )
-            conn.execute("COMMIT")
+            conn.commit()
             return response
         except Exception:
-            conn.execute("ROLLBACK")
+            conn.rollback()
             raise
 
 
 @app.get("/")
 def root():
     return FileResponse(BASE_DIR / "app" / "static" / "index.html")
-
-
-@app.on_event("startup")
-def startup_event():
-    init_db()

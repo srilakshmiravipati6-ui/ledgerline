@@ -1,74 +1,159 @@
-# API permissions and money effects
+# BalanceVault API Documentation (formerly LedgerLine)
 
-## Authentication
+All authenticated endpoints require an `Authorization` header formatted as `Bearer <token>`.
 
-All authenticated endpoints require an Authorization header in the form `Bearer <token>`.
+---
 
-- Admin: can create accounts, inspect all balances, perform deposits and withdrawals, and audit ledger integrity.
-- Account holder: can access their own accounts, deposit and withdraw from them, and transfer out of them.
-- Auditor: can read accounts and statements but cannot alter balances or ledger rows.
+## 1. Authentication & Onboarding
 
-## Endpoints
+### `POST /auth/register`
+- **Description**: Registers a new account holder and automatically provisions their primary bank account.
+- **Allowed Roles**: Public / Unauthenticated.
+- **Rate Limit**: 10 requests / minute.
+- **Request Body**:
+  ```json
+  {
+    "username": "johndoe",
+    "password": "SecurePassword123!",
+    "email": "john@example.com",
+    "initial_deposit": 500
+  }
+  ```
+- **Responses**:
+  - `200 OK`: User registered, primary account created, and bearer token returned.
+  - `409 Conflict`: Username already registered.
+  - `422 Unprocessable Entity`: Validation failure (username < 3 chars, password < 8 chars).
 
-### POST /login
+### `POST /auth/login` (and alias `POST /login`)
+- **Description**: Authenticates existing credentials and issues a signed 1-hour Bearer token.
+- **Allowed Roles**: Public / Unauthenticated.
+- **Rate Limit**: 15 requests / minute.
+- **Request Body**:
+  ```json
+  {
+    "username": "johndoe",
+    "password": "SecurePassword123!"
+  }
+  ```
+- **Responses**:
+  - `200 OK`: `{"token": "eyJ...", "user": {"id": 1, "username": "johndoe", "role": "account_holder", "permissions": [...]}}`
+  - `401 Unauthorized`: Invalid credentials.
 
-- Allowed roles: everyone with a valid username/password.
-- Effect on money: none. It issues a bearer token used for subsequent requests.
+### `GET /auth/me` (and alias `GET /me`)
+- **Description**: Returns authenticated user profile, assigned role, and permissions.
+- **Allowed Roles**: Any authenticated user.
+- **Responses**:
+  - `200 OK`: User profile object.
+  - `401 Unauthorized`: Missing or expired token.
 
-### GET /me
+---
 
-- Allowed roles: any authenticated user.
-- Effect on money: none. Returns the current username and role.
+## 2. Health & Observability
 
-### GET /accounts
+### `GET /health`
+- **Description**: Liveness probe confirming API service availability.
+- **Responses**:
+  - `200 OK`: `{"status": "ok", "app": "BalanceVault", "version": "2.0.0", "timestamp": 1700000000}`
 
-- Allowed roles: admin, auditor, and each account holder for their own accounts.
-- Effect on money: none. Lists current balances and account metadata.
+### `GET /ready`
+- **Description**: Readiness probe testing PostgreSQL database and Redis connectivity.
+- **Responses**:
+  - `200 OK`: All critical infrastructure dependencies are operational.
+  - `503 Service Unavailable`: Database unreachable (returns failure status without leaking credentials).
 
-### POST /accounts
+---
 
-- Allowed roles: admin only.
-- Effect on money: creates a new account with a zero starting balance and a ledger entry marking the account creation.
+## 3. Account Management
 
-### GET /accounts/{id}
+### `GET /accounts`
+- **Allowed Roles**: `super_admin`, `auditor`, and `account_holder` (account holders see only accounts they own).
+- **Responses**:
+  - `200 OK`: Array of accounts with current integer balances and overdraft limits.
 
-- Allowed roles: admin, auditor, and the owning account holder.
-- Effect on money: none. Returns the balance and account settings.
+### `POST /accounts`
+- **Allowed Roles**: `super_admin` only.
+- **Request Body**:
+  ```json
+  {
+    "name": "Corporate Escrow",
+    "owner_username": "johndoe",
+    "overdraft_limit": 10000
+  }
+  ```
+- **Responses**:
+  - `200 OK`: Account created with zero balance and ledger creation event.
+  - `403 Forbidden`: Caller lacks `accounts:create` permission.
+  - `409 Conflict`: Account name already taken.
 
-### GET /accounts/{id}/statement
+### `GET /accounts/{id}`
+- **Allowed Roles**: `super_admin`, `auditor`, or the owning `account_holder`.
+- **Responses**:
+  - `200 OK`: Account details.
+  - `403 Forbidden`: Attempting to inspect another user's account.
+  - `404 Not Found`: Account does not exist.
 
-- Allowed roles: admin, auditor, and the owning account holder.
-- Effect on money: none. Returns all ledger rows for the account, including credits, debits, and refused attempts, with the running balance and actor username.
+### `GET /accounts/{id}/statement`
+- **Allowed Roles**: `super_admin`, `auditor`, or the owning `account_holder`.
+- **Responses**:
+  - `200 OK`: Full chronological list of ledger events (`credit`, `debit`, `refused`), running balances, actors, and ledger hash validation flag.
 
-### POST /deposits
+---
 
-- Allowed roles: admin and the owning account holder.
-- Effect on money: adds the amount to the account balance; inserts a `credit` ledger row and updates the running balance.
-- Provide a unique `client_key` for retry-safe requests. A key is bound to the authenticated user and the full operation; reusing it for different input returns `409`.
+## 4. Money Operations (Idempotent & Atomic)
 
-### POST /withdrawals
+Every money endpoint accepts a unique `client_key`. Retrying with an identical key and payload safely returns the prior response. Reusing a key with altered parameters or a different user returns `409 Conflict`.
 
-- Allowed roles: admin and the owning account holder.
-- Effect on money: subtracts the amount if the resulting balance is above the overdraft floor; otherwise the request is rejected and written as a `refused` ledger entry.
-- Provide a unique `client_key` for retry-safe requests. A key is bound to the authenticated user and the full operation; reusing it for different input returns `409`.
+### `POST /deposits`
+- **Allowed Roles**: `super_admin` or the owning `account_holder`.
+- **Request Body**:
+  ```json
+  {
+    "account_id": 1,
+    "amount": 1000,
+    "description": "Salary payroll",
+    "client_key": "dep-uuid-12345"
+  }
+  ```
+- **Responses**:
+  - `200 OK`: Funds added; running balance updated atomically.
+  - `403 Forbidden`: Unauthorized user.
 
-### POST /transfers
+### `POST /withdrawals`
+- **Allowed Roles**: `super_admin` or the owning `account_holder`.
+- **Request Body**:
+  ```json
+  {
+    "account_id": 1,
+    "amount": 250,
+    "description": "ATM cash withdrawal",
+    "client_key": "with-uuid-12345"
+  }
+  ```
+- **Responses**:
+  - `200 OK` (`"result": "posted"`): Funds debited.
+  - `200 OK` (`"result": "rejected"`, `"reason": "insufficient_funds"`): Exceeds overdraft floor; refused event logged to audit ledger.
 
-- Allowed roles: admin and the owning account holder on the source account.
-- Effect on money: debits the source account and credits the destination account in one transaction; if funds are insufficient the transfer is rejected and a `refused` row is recorded.
-- Provide a unique `client_key` for retry-safe requests. A key is bound to the authenticated user and the full operation; reusing it for different input returns `409`.
+### `POST /transfers`
+- **Allowed Roles**: `super_admin` or the owning `account_holder` of the source account.
+- **Request Body**:
+  ```json
+  {
+    "from_account_id": 1,
+    "to_account_id": 2,
+    "amount": 300,
+    "description": "Vendor invoice payment",
+    "client_key": "xfer-uuid-12345"
+  }
+  ```
+- **Responses**:
+  - `200 OK` (`"result": "posted"`): Source account debited, destination account credited atomically in one database transaction.
+  - `200 OK` (`"result": "rejected"`, `"reason": "insufficient_funds"`): Insufficient funds.
 
-### GET /ledger/verify
+---
 
-- Allowed roles: admin and auditor.
-- Effect on money: none. Confirms the ledger hash chain remains intact and append-only.
+## 5. Ledger Integrity
 
-## Money invariants enforced
-
-- Every transfer is one database transaction, so debits and credits are written together or not at all.
-- No balance can go below zero unless a configured overdraft limit allows it.
-- Idempotency keys are stored per client key so replayed requests return the original result without moving money again.
-- Reusing a key with a different request or user returns `409 Conflict`.
-- The database rejects ledger updates and deletes; a hash chain provides an additional integrity check.
-
-Amounts are positive whole rupees. Account balances are stored as integers; transfers and their debit/credit ledger entries are atomic.
+### `GET /ledger/verify`
+- **Allowed Roles**: `super_admin` and `auditor`.
+- **Responses**:
+  - `200 OK`: `{"hash_valid": true}` confirming the entire ledger hash chain from genesis to the latest event is unbroken.

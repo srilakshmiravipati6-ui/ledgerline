@@ -1,95 +1,93 @@
-# LedgerLine technical design
+# BalanceVault Technical Design (formerly LedgerLine)
 
-## Scope and stack
+## 1. System Scope & Technology Stack
 
-LedgerLine is a single-instance financial transaction demonstration built with
-FastAPI, Python, SQLite, and a static HTML/CSS/JavaScript dashboard. SQLite is
-the existing project database and is included with Python; no database server
-or additional package is required. The dashboard keeps its current visual
-design and calls the API for account data, statements, authentication, and
-money operations.
+BalanceVault is a secure, high-integrity financial transaction platform designed to guarantee mathematical conservation of money, idempotency, append-only ledger transparency, and concurrency safety.
 
-The database file is `ledger.db` in the project root. Startup creates missing
-tables and indexes, adds the actor and request-fingerprint columns to older
-idempotency tables, migrates plaintext passwords to PBKDF2 hashes, and seeds
-example data only where it is missing. Normal startup does not reset balances
-or ledger history.
+- **Backend**: Python 3.10+, FastAPI, Starlette.
+- **Database Layer**: SQLAlchemy, Alembic for schema migrations, psycopg2 for PostgreSQL, with dual-engine fallback to SQLite for lightweight local testing.
+- **Caching & Throttling**: Redis with atomic counters and sliding-window rate limiting; in-memory fallback if Redis is unavailable.
+- **Frontend Dashboard**: Single-page interactive HTML5 / CSS3 / JavaScript application served directly by FastAPI or deployable independently to static hosting (Vercel).
+- **Authentication**: HMAC-SHA256 signed Bearer tokens (1-hour expiry); salted PBKDF2-HMAC-SHA256 password hashing.
 
-## Data model
+---
 
-- `users`: unique username, salted PBKDF2 password hash, and one of the
-  `admin`, `account_holder`, or `auditor` roles.
-- `accounts`: unique name, owner username, integer-rupee balance, and
-  non-negative overdraft limit.
-- `ledger_entries`: account, event kind (`credit`, `debit`, or `refused`),
-  amount, running balance, description, actor, operation/request identifiers,
-  timestamp, and previous/current SHA-256 chain hashes.
-- `idempotency_keys`: unique client key, original response, actor, canonical
-  request fingerprint, and creation time.
+## 2. Relational Data Model
 
-Indexes support owner-scoped account listing and account statement lookup.
-SQLite foreign-key checks are enabled on database connections.
+### `users`
+- `id`: Integer primary key (Auto-increment / Serial).
+- `username`: String(80), unique, indexed.
+- `password`: String(256), salted PBKDF2 hash.
+- `role`: String(32) — `super_admin`, `account_holder`, or `auditor`.
+- `email`: String(255), optional contact.
+- `created_at`: BigInteger timestamp.
 
-## Authentication and authorization
+### `accounts`
+- `id`: Integer primary key (Auto-increment / Serial).
+- `name`: String(120), unique account title.
+- `owner_username`: Foreign key referencing `users.username`, indexed.
+- `balance`: BigInteger, whole-rupee units (64-bit integer prevents floating-point inaccuracy).
+- `overdraft_limit`: BigInteger, non-negative credit cushion (default 0).
+- `created_at`: BigInteger timestamp.
 
-`POST /login` verifies PBKDF2 hashes and returns a one-hour HMAC-signed bearer
-token. The current role and user identity are reloaded from the database for
-each authenticated request; a role embedded in a token is not used as the
-authorization source. `/me` returns the authenticated identity.
+### `ledger_entries` (Append-Only Audit Log)
+- `id`: Integer primary key.
+- `account_id`: Foreign key referencing `accounts.id`, indexed.
+- `kind`: `credit`, `debit`, or `refused`.
+- `amount`: BigInteger transaction amount.
+- `running_balance`: BigInteger balance after event posted.
+- `description`: Text transaction narrative.
+- `actor_user_id`: Integer ID of the initiating user.
+- `request_key`: String(128) client-supplied idempotency key.
+- `operation_id`: String(128) unique operation tracker.
+- `actor_username`: String(80) username of initiator.
+- `prev_hash`: String(64) SHA-256 of the prior ledger row.
+- `hash_value`: String(64) SHA-256 of the current canonical row payload.
+- `created_at`: BigInteger timestamp.
 
-| Role | Read accounts/statements | Create accounts | Deposit/withdraw | Transfer | Verify ledger |
-|---|---|---|---|---|---|
-| Admin | All | Yes | Any account | Any source account | Yes |
-| Account holder | Owned accounts | No | Owned accounts | Owned source account | No |
-| Auditor | All | No | No | No | Yes |
+### `idempotency_keys`
+- `client_key`: String(128) primary key.
+- `response_json`: Text representation of original response.
+- `actor_user_id`: Integer ID of the user who submitted the request.
+- `request_hash`: String(64) SHA-256 fingerprint of the request payload.
+- `created_at`: BigInteger timestamp.
 
-Production mode requires `LEDGERLINE_TOKEN_SECRET` and unique configured
-passwords of at least 12 characters for the seeded demo users. Local mode uses
-documented demo credentials and a random, process-local token secret.
+---
 
-## Money operation flow
+## 3. Concurrency Safety & Row-Level Locking
 
-Deposits, withdrawals, and transfers validate positive whole-rupee amounts and
-are processed inside `BEGIN IMMEDIATE` transactions. The balance check, balance
-update, ledger append, and idempotency record commit or roll back together.
-SQLite serializes writers, preventing concurrent withdrawals from spending the
-same balance. Withdrawals and transfers below the account's overdraft floor
-are refused without changing balances, and the refusal is appended to the
-ledger.
+Financial transactions require absolute isolation to prevent the double-spending problem (e.g., two concurrent withdrawals depleting the same initial balance).
 
-Clients should send and reuse a `client_key` when retrying an operation. The
-server binds each key to the authenticated user and operation fingerprint:
-identical retries return the saved response, while reuse for another user or
-different request returns `409 Conflict`. If a client omits the key, the API
-generates one for that request; callers that need retry protection must supply
-their own stable key.
+- **PostgreSQL Row-Level Locking**: In PostgreSQL, `SELECT ... WHERE id = :id FOR UPDATE` acquires an exclusive lock on the target account row until transaction commit/rollback.
+- **Deadlock Avoidance in Transfers**: Transfers between two accounts sort the account IDs deterministically (`ORDER BY id FOR UPDATE`) prior to acquiring locks. This guarantees that concurrent transfers in opposite directions (Account A -> B and Account B -> A) never cause database deadlocks.
+- **SQLite Concurrency**: In SQLite test environments, `BEGIN IMMEDIATE` acquires a database-level write lock before checking balances.
+- **Atomic Balance Updates**: Balances and their corresponding ledger entries are committed or rolled back in a single ACID transaction.
 
-## Audit integrity
+---
 
-Every event is serialized into a canonical payload and chained to the previous
-ledger hash. `/ledger/verify` and account statements report whether the chain
-verifies. Database triggers reject ledger updates and deletions. The ledger
-records refused attempts as well as successful postings and includes the
-initiating username and running balance.
+## 4. Cryptographic Hash-Chained Ledger
 
-## Validation
+To prove that transaction records have not been altered or deleted:
+1. Each row computes a canonical SHA-256 hash incorporating the previous row's hash (`prev_hash`), account ID, event kind, amount, running balance, actor, and request keys.
+2. The `/ledger/verify` and `/accounts/{id}/statement` endpoints verify the integrity of this unbroken chain back to the `genesis` state.
+3. Database triggers (`prevent_ledger_update` and `prevent_ledger_delete`) abort any SQL `UPDATE` or `DELETE` attempt.
+4. Database role security revokes `UPDATE` and `DELETE` privileges on `ledger_entries` from the application user (`app_user`).
 
-Run the automated suite with:
+---
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
+## 5. Rate Limiting & Denial-of-Service Protection
 
-Tests cover money conservation, duplicate retries and key conflicts, concurrent
-withdrawals, account authorization, auditor read-only access, deposit/
-withdrawal/transfer behavior, refused attempts, ledger integrity, password
-hashing, and migration from the prior SQLite schema. Test cases use temporary
-database files rather than the project database.
+- Integrated Redis rate limiter with sliding window counters.
+- Public/Authentication endpoints (`/auth/login`, `/auth/register`) are throttled to 10-15 requests per minute per IP.
+- Financial transactions (`/deposits`, `/withdrawals`, `/transfers`) are throttled to 60 requests per minute.
+- Returns `429 Too Many Requests` with a standard `Retry-After` header when thresholds are exceeded.
+- Configurable fail-safe mode (`RATE_LIMIT_FAIL_SAFE=true`) ensures that transient Redis network interruptions do not disrupt legitimate banking operations.
 
-## Operational limits
+---
 
-This design targets a single application instance and a local SQLite database.
-It is not a multi-instance/high-availability banking deployment. The repository
-does not currently provide a deployed application URL, password-reset or
-general user-provisioning flows, external audit-log shipping, or production
-secret rotation. Demo credentials must not be used for a public deployment.
+## 6. Role-Based Access Control (RBAC)
+
+A centralized authorization layer (`app/rbac.py`) evaluates incoming requests against role permissions:
+- **`super_admin`**: Full administrative access (`users:create`, `accounts:create`, `accounts:read_all`, `ledger:verify`).
+- **`account_holder`**: Access restricted strictly to owned accounts and authorized financial moves.
+- **`auditor`**: Strict read-only inspection access across all accounts, statements, and ledger chains; forbidden from executing deposits, withdrawals, or transfers.

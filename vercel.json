@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/(auth/.*|accounts.*|deposits|withdrawals|transfers|ledger/.*|health|ready|docs|openapi.json)",
+      "destination": "https://balancevault-backend-c955.onrender.com/$1"
+    },
+    {
+      "source": "/",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/$1"
+    }
+  ]
+}

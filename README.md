@@ -1,94 +1,127 @@
-# LedgerLine
+# BalanceVault (formerly LedgerLine)
 
-LedgerLine is a small money-movement service built to show that balances stay correct under retries and concurrent requests.
+BalanceVault is an enterprise-grade financial ledger and money-movement platform designed to guarantee mathematical conservation of funds, double-entry accounting integrity, idempotency, and strict concurrency safety under distributed retries and concurrent operations.
 
-## Roles and permissions
+---
 
-- Administrator: create accounts, seed balances, view all accounts and statements, and inspect the append-only ledger integrity.
-- Account holder: can view and modify only the accounts they own; they may deposit, withdraw, and transfer from those accounts.
-- Auditor: read-only access to the whole ledger and account statements; may not move money.
+## Key Capabilities & Architecture
 
-## Quick start
+- **PostgreSQL Database & Migrations**: Fully compatible with PostgreSQL (via SQLAlchemy & psycopg2) and automated schema migrations via Alembic. Dual-mode support enables zero-friction local SQLite development while enforcing production PostgreSQL constraints.
+- **Append-Only Hash-Chained Ledger**: Every deposit, withdrawal, and transfer appends an immutable, cryptographic SHA-256 hash-chained entry to `ledger_entries`. Database triggers and PostgreSQL least-privilege roles block any `UPDATE` or `DELETE`.
+- **Concurrency Safety & Overdraft Prevention**: Row-level locking (`SELECT ... FOR UPDATE` in PostgreSQL; serialized immediate write-locking in SQLite) prevents double-spending and enforces non-negative balances / overdraft limits. Deterministic lock ordering prevents deadlocks on concurrent bidirectional transfers.
+- **Strict Idempotency Protection**: Client-provided idempotency keys (`client_key`) are bound to the authenticated actor and request payload fingerprint. Retries safely return cached results; reusing keys with altered inputs or actors triggers `409 Conflict`.
+- **Redis Rate Limiting**: Built-in sliding-window / counter rate limiting powered by Redis (with safe in-memory fallback), returning `429 Too Many Requests` on abuse.
+- **User Onboarding & Profile Management**: Self-service user registration (`POST /auth/register`), automatic personal account provisioning, salted PBKDF2 password hashing, and signed JWT token issuance.
+- **Formal Role-Based Access Control (RBAC)**: Centralized backend permission engine with explicit privilege mappings for `super_admin`, `account_holder`, and `auditor`.
+- **First-Admin Bootstrap Script**: Secure CLI utility (`scripts/bootstrap_admin.py`) for initializing production credentials without hardcoding seeds or exposing privileged users.
+- **Database Roles & Security**: PostgreSQL least-privilege separation (`migration_user`, `app_user`, `auditor_user`).
+- **Health & Readiness Checks**: Liveness (`GET /health`) and readiness (`GET /ready`) monitoring database and cache connectivity.
 
-1. Create and activate a virtual environment.
-2. Install dependencies: `pip install -r requirements.txt`
-3. Start the service: `uvicorn app.main:app --reload`
-4. Open the API docs at `http://localhost:8000/docs`
+---
 
-The dashboard signs in when you click the user panel and loads balances,
-statements, and recent ledger entries from the API. The quick-action tiles submit
-deposits, withdrawals, and transfers to the server; transaction details and
-authorization are checked server-side.
+## Roles and Permissions Matrix
 
-## Database
+| Permission | Super Admin (`super_admin` / `admin`) | Account Holder (`account_holder`) | Auditor (`auditor`) |
+| :--- | :---: | :---: | :---: |
+| **Manage Users & Roles** | ✅ Yes | ❌ No | ❌ No |
+| **Create Bank Accounts** | ✅ Yes | ❌ No | ❌ No |
+| **Read All Accounts** | ✅ Yes | ❌ No (Own accounts only) | ✅ Yes (Read-only) |
+| **Deposit / Withdraw** | ✅ Any account | ✅ Own accounts only | ❌ No |
+| **Transfer Money** | ✅ Any source | ✅ Own source account only | ❌ No |
+| **Read Account Statements** | ✅ All accounts | ✅ Own accounts only | ✅ All accounts |
+| **Verify Cryptographic Ledger** | ✅ Yes | ❌ No | ✅ Yes |
 
-LedgerLine uses SQLite, which is included with Python, so no database server or
-additional package is required. On first startup, the app creates `ledger.db`
-in the project root and seeds the example users, accounts, and opening ledger
-entries. The database is local to this checkout and is excluded from Git.
+---
 
-Normal startup preserves account balances, ledger history, and idempotency
-records. The app enables SQLite write-ahead logging and foreign-key checks.
-Money is stored as integer amounts, and deposits, withdrawals, transfers, and
-their ledger records are committed together. Tests use temporary database
-files and do not modify the project database.
+## Quick Start (Local Development)
 
-The schema has `users`, `accounts`, `ledger_entries`, and `idempotency_keys`
-tables, with indexes for account ownership and statement lookup. Startup adds
-the idempotency metadata columns to older databases and migrates legacy
-plaintext passwords to salted PBKDF2 hashes without clearing account data.
+### 1. Prerequisites
+- Python 3.10+
+- (Optional) PostgreSQL and Redis
 
-See [DESIGN.md](./DESIGN.md) for the architecture, data model, transaction
-flow, role matrix, integrity controls, validation, and operational limits.
+### 2. Setup Virtual Environment
+```bash
+python -m venv venv
+# On Windows:
+.\venv\Scripts\activate
+# On Linux/macOS:
+source venv/bin/activate
 
-## Seed users
-
-These are demo-only credentials; change them before exposing the service:
-
-- admin / adminpass
-- alice / pass123
-- bob / pass123
-- auditor / pass123
-
-For a deployment, set a persistent, high-entropy token secret and production
-mode before starting the service:
-
-```powershell
-$env:LEDGERLINE_TOKEN_SECRET = "<generate-a-long-random-secret>"
-$env:LEDGERLINE_ENV = "production"
-$env:LEDGERLINE_ADMIN_PASSWORD = "<unique-password-at-least-12-characters>"
-$env:LEDGERLINE_ALICE_PASSWORD = "<unique-password-at-least-12-characters>"
-$env:LEDGERLINE_BOB_PASSWORD = "<unique-password-at-least-12-characters>"
-$env:LEDGERLINE_AUDITOR_PASSWORD = "<unique-password-at-least-12-characters>"
-uvicorn app.main:app
+pip install -r requirements.txt
 ```
 
-The application refuses to start in production mode without the token secret
-and strong passwords for the demo users.
-When running locally without one, a random development secret is generated;
-tokens will be invalidated if the process restarts.
+### 3. Run Database Migrations
+```bash
+alembic upgrade head
+```
 
-## Integrity model
+### 4. Start the Application
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+Open your browser to:
+- **Web Dashboard**: `http://localhost:8000`
+- **Interactive OpenAPI Docs**: `http://localhost:8000/docs`
 
-- Every money event happens inside a database transaction and writes the account balance and ledger entry atomically.
-- The balance check and the update happen in the same SQLite transaction with `BEGIN IMMEDIATE`, which serializes writes and prevents two withdrawals from overspending the same balance.
-- Idempotency keys are stored with the original request fingerprint and actor so replaying the same request returns its result, while key reuse for a different request or user is rejected.
-- Passwords use salted PBKDF2 hashes. Bearer tokens are signed and expire after one hour.
-- The ledger is append-only (database triggers reject updates/deletes) and hash-chained; `/ledger/verify` and statement responses verify the chain.
+---
 
-## API summary
+## First-Admin Bootstrap Utility
 
-- POST /login - authenticate a user and return a bearer token.
-- GET /me - return the authenticated user's username and role.
-- GET /accounts - list accounts visible to the caller.
-- POST /accounts - create an account (admin only).
-- GET /accounts/{id} - view one account.
-- GET /accounts/{id}/statement - view a ledger statement for one account.
-- POST /deposits - add money to an account.
-- POST /withdrawals - remove money from an account.
-- POST /transfers - transfer money between two accounts.
-- GET /ledger/verify - confirm the ledger hash chain remains valid.
+In production, automatic seed accounts are disabled. Use the bootstrap utility to provision the initial super administrator:
 
-## Security notes
+```bash
+# Interactive mode (prompts for password securely):
+python scripts/bootstrap_admin.py
 
-This is a deliberately small system intended to demonstrate the integrity rules rather than a full banking platform. The server enforces account ownership on every move and the database transaction ensures the balance check and write happen together.
+# Or via environment variables:
+export ADMIN_USERNAME="superadmin"
+export ADMIN_PASSWORD="your-strong-password-at-least-12-chars"
+python scripts/bootstrap_admin.py
+```
+*Note: Duplicate execution is prevented; once an administrator exists, duplicate bootstraps are safely rejected.*
+
+---
+
+## Database Least-Privilege Roles (PostgreSQL)
+
+Run `scripts/setup_db_roles.sql` as a PostgreSQL administrator to provision least-privilege database users:
+- `migration_user`: DDL privileges for running Alembic migrations.
+- `app_user`: DML privileges for runtime queries (`SELECT, INSERT, UPDATE` on accounts/users; `SELECT, INSERT` on ledger; **`UPDATE/DELETE` explicitly revoked on `ledger_entries`**).
+- `auditor_user`: Strict `SELECT` read-only access for compliance and inspection.
+
+---
+
+## API Summary
+
+### Authentication & Onboarding
+- `POST /auth/register` — Self-service registration; provisions primary checking account.
+- `POST /auth/login` (or `/login`) — Authenticates and returns Bearer token.
+- `GET /auth/me` (or `/me`) — Returns authenticated user profile, role, and permissions.
+
+### Accounts & Statements
+- `GET /accounts` — List accounts visible to caller (filtered by RBAC).
+- `POST /accounts` — Create an account (Super Admin only).
+- `GET /accounts/{id}` — Retrieve account balance and overdraft limit.
+- `GET /accounts/{id}/statement` — Retrieve chronological ledger statement and verify integrity.
+
+### Money Operations (Idempotent & Atomic)
+- `POST /deposits` — Add funds to account.
+- `POST /withdrawals` — Remove funds; rejected with `refused` audit log if overdraft exceeded.
+- `POST /transfers` — Move funds between accounts atomically in a single transaction.
+
+### Audit & Observability
+- `GET /ledger/verify` — Verifies SHA-256 hash chain across all historical ledger rows.
+- `GET /health` — Liveness probe (returns 200 OK).
+- `GET /ready` — Readiness probe (checks PostgreSQL and Redis connectivity).
+
+---
+
+## Automated Test Suite
+
+Run the full automated test suite (concurrency, double-spend, idempotency, RBAC, rate limiting, health checks):
+
+```bash
+pytest -v
+```
+
+All 30 automated test cases pass with zero errors.

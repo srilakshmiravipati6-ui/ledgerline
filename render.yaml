@@ -1,0 +1,50 @@
+services:
+  # BalanceVault Backend Web Service
+  - type: web
+    name: balancevault-backend
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt && alembic upgrade head
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: LEDGERLINE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: balancevault-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: balancevault-redis
+          property: connectionString
+      - key: LEDGERLINE_TOKEN_SECRET
+        generateValue: true
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: RATE_LIMIT_FAIL_SAFE
+        value: "true"
+      - key: RATE_LIMIT_AUTH_PER_MINUTE
+        value: "10"
+      - key: RATE_LIMIT_TRANSACTION_PER_MINUTE
+        value: "60"
+      - key: CORS_ORIGINS
+        value: "*"
+
+  # BalanceVault Redis Key-Value Store (Rate Limiting)
+  - type: redis
+    name: balancevault-redis
+    region: oregon
+    plan: starter
+    ipAllowList: [] # internal access only
+
+databases:
+  # BalanceVault PostgreSQL Database
+  - name: balancevault-postgres
+    databaseName: balancevault
+    user: balancevault_app
+    region: oregon
+    plan: starter
+

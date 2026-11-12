@@ -1,49 +1,35 @@
-# Threat model and mitigations
+# BalanceVault Threat Model & Security Mitigations (formerly LedgerLine)
 
-## 1. Double-spend via race on a withdrawal
+## 1. Double-Spend via Race Condition on Concurrent Withdrawals
+- **Threat**: Two simultaneous requests against the same account read the balance concurrently and both debit the account, causing funds to be spent twice.
+- **Mitigation**: In PostgreSQL, every balance-changing route executes `SELECT ... FOR UPDATE`, obtaining an exclusive row-level lock before checking the balance. In SQLite, `BEGIN IMMEDIATE` acquires an immediate write lock. Check and update occur within the exact same ACID transaction.
 
-Threat: two withdrawal requests hit the same account at the same time and both read the same balance before either writes it.
+## 2. Deadlock on Concurrent Bidirectional Transfers
+- **Threat**: User A transfers to User B while User B simultaneously transfers to User A. Two concurrent transactions lock opposite accounts first, causing an unresolvable database deadlock.
+- **Mitigation**: BalanceVault sorts all account IDs deterministically (`ORDER BY id FOR UPDATE`) prior to acquiring locks. Both transactions attempt to lock accounts in the exact same order, preventing cyclic wait conditions and deadlocks.
 
-Mitigation: each money-changing route starts a SQLite transaction with `BEGIN IMMEDIATE`, which obtains a write lock before the balance is checked and updated. The check and update are in the same transaction, so both requests cannot pass the same balance check.
+## 3. Network Retry & Replay Attacks
+- **Threat**: A client or network proxy retries a withdrawal or transfer, causing money to be moved multiple times.
+- **Mitigation**: Idempotency keys (`client_key`) are stored in `idempotency_keys` in the same transaction as the balance move, bound to the actor's user ID and a SHA-256 fingerprint of the request payload. Replays return the cached response; key reuse with modified inputs returns `409 Conflict`.
 
-## 2. Replay from a network retry or double-click
+## 4. Unauthorized Account Access & Privilege Escalation
+- **Threat**: A malicious user attempts to debit or transfer money from another user's account, or access administrative endpoints.
+- **Mitigation**: Centralized RBAC (`app/rbac.py`) enforces strict permission checks on all backend endpoints. Financial operations verify that the authenticated user owns the source account or holds `super_admin` privilege. Auditors have read-only access.
 
-Threat: the same transfer or withdrawal is submitted twice with the same client key and the second attempt pays again.
+## 5. Brute-Force & Denial-of-Service on Authentication & Transactions
+- **Threat**: Credential stuffing attacks against `/auth/login` or transaction flooding against `/transfers`.
+- **Mitigation**: Redis-backed rate limiting throttles authentication endpoints to 10-15 requests per minute per IP, and money endpoints to 60 requests per minute. Returns `429 Too Many Requests` with a `Retry-After` header.
 
-Mitigation: the server stores a unique `client_key`, request fingerprint, actor, and prior response in the `idempotency_keys` table in the same transaction as the money move. An exact replay returns the first result; reuse with a different payload or actor returns `409`.
+## 6. Ledger Tampering & Audit Row Deletion
+- **Threat**: A compromised account or rogue insider attempts to delete or alter historical ledger rows to conceal fraudulent activity.
+- **Mitigation**:
+  1. Each ledger entry contains a cryptographic SHA-256 hash chained to the prior entry's hash (`prev_hash`).
+  2. Database triggers (`prevent_ledger_update` and `prevent_ledger_delete`) abort any update or deletion.
+  3. PostgreSQL database roles enforce least privilege: `app_user` is granted only `SELECT` and `INSERT` on `ledger_entries`; `UPDATE` and `DELETE` are revoked at the database role level.
 
-## 3. Overdrawn accounts
-
-Threat: a valid request could drive an account negative by creating a balance below zero.
-
-Mitigation: every withdrawal and transfer validates `new_balance >= -overdraft_limit` in the same transaction as the update. If not, the request is rejected and recorded as a `refused` ledger entry.
-
-## 4. Unauthorized money movement
-
-Threat: a user attempts to spend money from an account they do not own.
-
-Mitigation: every money-changing request checks the live database role and source account owner before processing. Only administrators and the owning account holder can move funds; auditors are read-only. The service returns `403` for a forbidden operation.
-
-## 5. Ledger tampering
-
-Threat: a ledger row is altered or deleted to hide a payment.
-
-Mitigation: database triggers reject ledger updates and deletes, and entries are hash-chained; each row stores the previous hash and its own hash. The `/ledger/verify` endpoint exposes the chain check.
-
-## 6. Credential and token theft
-
-Threat: a database reader obtains passwords, or a guessed signing key lets an attacker forge bearer tokens.
-
-Mitigation: passwords are stored as salted PBKDF2 hashes. Production startup requires `LEDGERLINE_TOKEN_SECRET`; local development generates a random process secret. Demo credentials are published for local testing only and must be replaced before deployment.
-
-## 7. Lost debit or credit
-
-Threat: a transfer may debits one account while the credit to the destination is omitted due to a partial failure.
-
-Mitigation: transfer logic is one database transaction that updates both balances and inserts both ledger rows together. A failure before commit rolls back the transaction, leaving both accounts unchanged.
-
-## 8. Risks deliberately accepted
-
-- The service uses a single SQLite database file rather than a distributed ledger or external transaction coordinator. This is intentionally small and is suitable for a single-process demo system, not a multi-region bank deployment.
-- SQLite is suitable for this single-instance demonstration, not high-availability multi-instance production. External audit-log shipping, secret rotation, password reset, and account lifecycle workflows are not implemented.
-- The user model is intentionally simple: ownership is tied to the account owner, and a single account has one owner. This keeps the authorization logic explicit and easy to audit.
+## 7. Credential Theft & Production Seeding Risks
+- **Threat**: Passwords stolen via SQL injection or exposure of hardcoded administrative credentials.
+- **Mitigation**:
+  1. Passwords are saved exclusively as salted PBKDF2-HMAC-SHA256 hashes (240,000 iterations). Plaintext passwords are never stored.
+  2. First administrator is provisioned via a dedicated bootstrap script (`scripts/bootstrap_admin.py`). Automatic production seeding of default credentials is disabled.
+  3. Production environment requires `LEDGERLINE_TOKEN_SECRET` with high entropy.
